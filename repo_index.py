@@ -1,7 +1,7 @@
 # Repo Index: fetch a GitHub repository and make it searchable
 #
 # This is the same three steps as 4_rag/1a_rag_basics.py in the langchain-course -
-# load documents, split them, embed them into a vector store - with two changes
+# load documents, split them, embed them into a vector store, with two changes
 # that both exist because this app gets DEPLOYED rather than run on a laptop.
 #
 # CHANGE 1: WE DOWNLOAD A ZIP, WE DO NOT `git clone`
@@ -27,7 +27,7 @@
 #
 # `InMemoryVectorStore` is a first-class LangChain vector store with the same
 # `.as_retriever()` interface the course teaches, so nothing about the lesson
-# changes - only where the vectors live. One index per visitor, discarded when
+# changes, only where the vectors live. One index per visitor, discarded when
 # they leave, which is exactly the lifetime we want.
 
 import ast
@@ -149,8 +149,110 @@ def parse_repo_url(url: str) -> tuple[str, str]:
             f"Try something like https://github.com/pypa/sampleproject"
         )
 
-    # Deep links like /tree/main/src - keep only the first two segments
+    # Deep links like /tree/main/src, so keep only the first two segments
     return parts[0], parts[1]
+
+
+# ============================================================================
+# PART 1b: Which files to keep when a repo is bigger than the caps
+# ============================================================================
+# THE BUG THIS FIXES, and it was invisible until measured.
+#
+# The caps used to be applied in ZIP ORDER, which is roughly alphabetical, so
+# WHICH files survived was arbitrary:
+#
+#   facebook/react   -> chunk languages came out rust:3332, ts:104.
+#                       React's repo has 4,210 files under compiler/ (a Rust
+#                       compiler) against 2,154 under packages/. Reading in
+#                       alphabetical order, the 1,200-file cap filled up inside
+#                       compiler/ and never reached React itself. Asking about
+#                       hooks retrieved Rust.
+#   tiangolo/fastapi -> markdown:3756 against js:25, because the cap filled up
+#                       on the translated documentation tree.
+#
+# The repositories were never the problem. The selection was.
+#
+# So: work out what the project is mostly WRITTEN IN, then keep files in
+# priority order, primary-language source first, the top-level README next,
+# other source after that, documentation and test trees last.
+
+# Path fragments that mark content as real but secondary
+DOC_PATH_HINTS = ("docs/", "doc/", "website/", "site/", "translations/",
+                  "i18n/", "locale/", "changelog", "news/")
+TEST_PATH_HINTS = ("test/", "tests/", "__tests__/", "spec/", "e2e/", "fixtures/",
+                   "benchmark", "examples/", "example/", "demo/", "samples/",
+                   "scripts/")
+
+# Markdown lives in LANGUAGE_BY_EXTENSION (it has its own splitter), but it is
+# prose, not source, so it must be excluded when deciding the primary language.
+MARKDOWN_EXTENSIONS = {".md", ".markdown"}
+PROSE_EXTENSIONS = MARKDOWN_EXTENSIONS | {".txt", ".rst"}
+SOURCE_EXTENSIONS = set(LANGUAGE_BY_EXTENSION) - MARKDOWN_EXTENSIONS
+
+
+def _primary_extensions(entries: list) -> set:
+    """Which extensions is this project mostly WRITTEN in, weighted by bytes.
+
+    By bytes rather than file count: a project can have 2,000 tiny generated
+    files and 50 substantial modules, and the modules are the thing.
+
+    Documentation and test trees are excluded from the vote, or a project with
+    enormous docs elects Markdown as its primary language and we are back where
+    we started.
+    """
+    weight = {}
+    for path, size in entries:
+        lowered = path.lower()
+        if any(h in lowered for h in DOC_PATH_HINTS + TEST_PATH_HINTS):
+            continue
+        extension = os.path.splitext(path)[1].lower()
+        if extension in SOURCE_EXTENSIONS:
+            weight[extension] = weight.get(extension, 0) + size
+
+    if not weight:
+        return set(SOURCE_EXTENSIONS)
+
+    total = sum(weight.values())
+    ranked = sorted(weight.items(), key=lambda kv: -kv[1])
+
+    # Take extensions until 80% of source bytes are covered, so a genuinely
+    # bilingual project (a .ts front end with a .py back end) keeps both.
+    primary, running = set(), 0
+    for extension, size in ranked:
+        primary.add(extension)
+        running += size
+        if running / total >= 0.80:
+            break
+    return primary
+
+
+def _file_priority(path: str, primary: set) -> int:
+    """Lower is kept first. See the comment at the top of this section."""
+    lowered = path.lower()
+    extension = os.path.splitext(path)[1].lower()
+    depth = path.count("/")
+
+    is_doc = any(h in lowered for h in DOC_PATH_HINTS)
+    is_test = any(h in lowered for h in TEST_PATH_HINTS)
+    is_source = extension in SOURCE_EXTENSIONS
+
+    # 0. the actual project: primary-language source, outside docs and tests
+    if is_source and extension in primary and not is_doc and not is_test:
+        return 0
+    # 1. the top-level README, short, and often the best answer to
+    #    "what is this project"
+    if depth == 0 and extension in MARKDOWN_EXTENSIONS:
+        return 1
+    # 2. primary-language source inside tests (still shows how the API is used)
+    if is_source and extension in primary:
+        return 2
+    # 3. source in another language (React's Rust compiler lands here)
+    if is_source:
+        return 3
+    # 4. documentation
+    if extension in PROSE_EXTENSIONS:
+        return 4
+    return 5
 
 
 # ============================================================================
@@ -168,6 +270,7 @@ class RepoContents:
     skipped: dict = field(default_factory=dict)   # reason -> count
     total_bytes: int = 0
     truncated: bool = False
+    primary_extensions: list = field(default_factory=list)
 
     @property
     def full_name(self) -> str:
@@ -215,11 +318,13 @@ def fetch_repo(owner: str, repo: str, token: str = None) -> RepoContents:
     contents = RepoContents(owner=owner, repo=repo)
 
     with zipfile.ZipFile(buffer) as archive:
-        entries = [e for e in archive.infolist() if not e.is_dir()]
+        all_entries = [e for e in archive.infolist() if not e.is_dir()]
         # GitHub wraps everything in one directory named owner-repo-sha
-        prefix = entries[0].filename.split("/")[0] + "/" if entries else ""
+        prefix = all_entries[0].filename.split("/")[0] + "/" if all_entries else ""
 
-        for entry in entries:
+        # ---- Pass 1: decide what is eligible, WITHOUT reading anything ----
+        eligible = []
+        for entry in all_entries:
             path = entry.filename[len(prefix):] if entry.filename.startswith(prefix) \
                 else entry.filename
             if not path:
@@ -238,9 +343,21 @@ def fetch_repo(owner: str, repo: str, token: str = None) -> RepoContents:
             if entry.file_size > MAX_FILE_BYTES:
                 contents.skipped["too large"] = contents.skipped.get("too large", 0) + 1
                 continue
+            eligible.append((path, entry, entry.file_size))
+
+        # ---- Pass 2: sort by priority, so the caps keep the RIGHT files ----
+        primary = _primary_extensions([(p, s) for p, _, s in eligible])
+        contents.primary_extensions = sorted(primary)
+        # Within a tier, shallower paths first: fastapi/main.py before
+        # fastapi/deeply/nested/helper.py
+        eligible.sort(key=lambda item: (_file_priority(item[0], primary),
+                                        item[0].count("/"), item[0]))
+
+        # ---- Pass 3: read in that order, up to the cap ----
+        for path, entry, size in eligible:
             if len(contents.files) >= MAX_FILES:
                 contents.truncated = True
-                continue
+                break
 
             try:
                 raw = archive.read(entry)
@@ -250,13 +367,16 @@ def fetch_repo(owner: str, repo: str, token: str = None) -> RepoContents:
             # A binary file that slipped through the extension check will be
             # full of replacement characters; skip it rather than embed noise.
             text = raw.decode("utf-8", errors="replace")
-            if text.count("�") > len(text) * 0.02:
+            if text.count(chr(0xFFFD)) > len(text) * 0.02:
                 contents.skipped["looks binary"] = \
                     contents.skipped.get("looks binary", 0) + 1
                 continue
 
             contents.files[path] = text
             contents.total_bytes += entry.file_size
+
+        if contents.truncated:
+            contents.skipped["beyond the file cap"] = len(eligible) - len(contents.files)
 
     return contents
 
@@ -292,7 +412,7 @@ def _is_text_file(path: str) -> bool:
 # it from the function it belongs to.
 #
 #   1. It cuts inside strings and docstrings. A code generator holding a
-#      template, or a docstring showing an example, contains "\ndef " - and the
+#      template, or a docstring showing an example, contains "\ndef ", and the
 #      splitter happily cuts there, sometimes tearing an unterminated triple
 #      quote in half.
 #   2. It strands decorators. '\ndef ' matches immediately BEFORE the def, so
@@ -309,8 +429,8 @@ def _is_text_file(path: str) -> bool:
 #
 # The cost, stated plainly: `ast` is Python-only. Doing this for JS, TS and Go
 # would mean a parser per language (tree-sitter or similar), which is a much
-# bigger commitment than this app justifies. So Python - usually the bulk of a
-# Python project - gets exact chunks, and the rest gets good-enough ones.
+# bigger commitment than this app justifies. So Python, usually the bulk of a
+# Python project, gets exact chunks, and the rest gets good-enough ones.
 
 
 def _split_large_node(node, lines: list) -> list:
@@ -322,7 +442,7 @@ def _split_large_node(node, lines: list) -> list:
     so a retrieved method announces which class it belongs to.
 
     A single enormous FUNCTION has no child definitions to split at, so that one
-    genuinely does fall back to the character splitter - but it is now one known
+    genuinely does fall back to the character splitter, but it is now one known
     function being divided, not an arbitrary window over the file.
     """
     pieces = []
@@ -367,7 +487,7 @@ def _split_large_node(node, lines: list) -> list:
         symbol = f"{node.name}.{child.name}"
 
         if len(text) > CHUNK_SIZE * 2:
-            # A giant method - recurse once more, then give up to characters
+            # A giant method. Recurse once more, then give up to characters
             for part, _ in _split_large_node(child, lines):
                 pieces.append((part, symbol))
         else:
@@ -380,7 +500,7 @@ def chunk_python_ast(path: str, source: str) -> list:
     """Split a Python file at real definition boundaries, using the AST.
 
     Returns a list of (text, symbol) pairs. Falls back to the character splitter
-    if the file does not parse - a Python 2 file, or syntax newer than this
+    if the file does not parse, a Python 2 file, or syntax newer than this
     interpreter, should still be searchable rather than silently vanishing.
     """
     try:
@@ -400,7 +520,7 @@ def chunk_python_ast(path: str, source: str) -> list:
             continue
 
         # START AT THE FIRST DECORATOR. This is the whole reason to use the AST
-        # rather than text matching - see point 2 in the comment above.
+        # rather than text matching, see point 2 in the comment above.
         start = node.lineno
         if node.decorator_list:
             start = min(start, min(d.lineno for d in node.decorator_list))
@@ -409,7 +529,7 @@ def chunk_python_ast(path: str, source: str) -> list:
         text = "\n".join(lines[start - 1:end])
         covered.update(range(start, end + 1))
 
-        # A unit that fits stays whole - the common case, and the point of all this.
+        # A unit that fits stays whole, the common case, and the point of all this.
         if len(text) <= CHUNK_SIZE * 2:
             pieces.append((text, node.name))
             continue
@@ -462,6 +582,8 @@ def split_repo(contents: RepoContents) -> list:
     """
     documents = []
 
+    # contents.files is already in priority order (see fetch_repo), so if the
+    # chunk cap bites, it bites on the least important files.
     for path, text in contents.files.items():
         if not text.strip():
             continue
@@ -555,7 +677,7 @@ def build_index(url: str, token: str = None, progress=None,
     say(f"Embedding {len(documents)} chunks...")
     # The key is passed EXPLICITLY, never read from the process environment.
     # A visitor's own key must not become the process default for every other
-    # visitor - which is exactly what setting os.environ inside a cached
+    # visitor, which is exactly what setting os.environ inside a cached
     # function would do.
     embeddings = OpenAIEmbeddings(model=EMBEDDING_MODEL,
                                   **({"api_key": api_key} if api_key else {}))

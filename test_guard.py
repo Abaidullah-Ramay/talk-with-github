@@ -1,4 +1,4 @@
-# Tests for guard.py - no API key, no network, no services.
+# Tests for guard.py. No API key, no network, no services.
 #
 # The security brief is explicit about why these exist:
 #
@@ -18,7 +18,7 @@ import sys
 import types
 
 # guard.py imports streamlit at module level, and importing streamlit outside a
-# script run is fine - but @st.cache_resource needs a runtime to actually call.
+# script run is fine, but @st.cache_resource needs a runtime to actually call.
 # The classifier functions are pure, so we test those directly and stub the
 # cache-backed ones.
 import guard
@@ -62,7 +62,7 @@ RANDOM_ERROR = "ConnectionError: Max retries exceeded with url: /v1/chat/complet
 
 
 class FakeError(Exception):
-    """Stands in for an openai.RateLimitError etc - only the text is classified."""
+    """Stands in for an openai.RateLimitError etc, only the text is classified."""
 
 
 # ============================================================================
@@ -73,7 +73,7 @@ class FakeError(Exception):
 def test_quota_error_is_terminal_not_transient():
     """A spent budget must NOT be read as 'you are going too fast'.
 
-    Both classifiers match this string - it contains 'insufficient_quota' AND
+    Both classifiers match this string, it contains 'insufficient_quota' AND
     '429'. The ordering in explain_failure is what makes it terminal. Get it
     backwards and every visitor whose budget is gone is told to retry shortly,
     inviting them to hammer a wall forever.
@@ -82,7 +82,7 @@ def test_quota_error_is_terminal_not_transient():
 
     assert guard.out_of_credit(error), "quota error not detected as terminal"
     assert guard.rate_limited(error), (
-        "this string DOES contain 429 - that is the whole trap, and why order matters"
+        "this string DOES contain 429, that is the whole trap, and why order matters"
     )
 
     message, should_close = guard.explain_failure(error, own_key=False)
@@ -231,7 +231,7 @@ def test_visitor_id_rejects_non_string_ip():
         first = guard.visitor_id()
         guard.st.context = FakeContext(mock.MagicMock())
         second = guard.visitor_id()
-        assert first == second, "distinct mocks produced distinct keys - gate defeated"
+        assert first == second, "distinct mocks produced distinct keys, gate defeated"
 
         # A genuine IP is used as-is
         guard.st.context = FakeContext("203.0.113.7")
@@ -269,7 +269,7 @@ def main():
     tests = [v for k, v in sorted(globals().items())
              if k.startswith("test_") and isinstance(v, types.FunctionType)]
     print("=" * 68)
-    print(f"guard tests ({len(tests)}) - no key, no network")
+    print(f"guard tests ({len(tests)}), no key, no network")
     print("=" * 68)
     failures = 0
     for test in tests:

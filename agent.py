@@ -26,7 +26,7 @@
 #
 # The three non-retrieval tools are also EXACT. A directory tree and a file's
 # contents are things a loop can produce perfectly, so the model is never asked
-# to guess at them - it is handed the real thing and asked to explain it.
+# to guess at them, it is handed the real thing and asked to explain it.
 
 import os
 
@@ -61,7 +61,7 @@ MAX_FILE_CHARS = 12000
 # PART 1: The system prompt
 # ============================================================================
 # Two halves: what the agent is for, and what it must not do. The second half is
-# the important one - an agent with a "read the code" tool sounds trustworthy,
+# the important one, an agent with a "read the code" tool sounds trustworthy,
 # and will still confidently describe a file it never opened if you let it.
 
 SYSTEM_PROMPT = """You are a helpful engineer who has just read through the GitHub \
@@ -90,6 +90,9 @@ dependency folders). If a question is about one of those, say it was not indexed
 rather than guessing.
 - Keep answers conversational and reasonably short. Use a code block when showing \
 code, and plain prose otherwise.
+- Write with ordinary punctuation. Do not use em dashes or a spaced hyphen as a \
+sentence break; use a comma, a colon, or a full stop instead. Hyphens inside \
+compound words like "read-only" and inside file names are fine.
 - You are read-only. You cannot modify, commit to, or open issues on this \
 repository."""
 
@@ -233,7 +236,7 @@ def build_tools(index) -> list:
             "Largest indexed files:",
         ]
         for path, text in largest:
-            lines.append(f"  {path} - {len(text.splitlines())} lines")
+            lines.append(f"  {path}: {len(text.splitlines())} lines")
 
         if contents.skipped:
             lines.append("")
@@ -258,7 +261,7 @@ def build_tools(index) -> list:
             description=(
                 "The exact directory tree of the repository. Input: nothing (pass an "
                 "empty string). Use for any question about folders, layout, or which "
-                "files exist. This is exact - never guess at structure instead."
+                "files exist. This is exact, never guess at structure instead."
             ),
         ),
         Tool(
@@ -335,7 +338,7 @@ def ask(executor: AgentExecutor, question: str, chat_history: list) -> str:
     """Run one turn and return the answer text.
 
     `chat_history` is a list of LangChain message objects, exactly as in
-    4_rag/7_rag_conversational.py - we pass the whole history in and the caller
+    4_rag/7_rag_conversational.py. We pass the whole history in and the caller
     appends to it afterwards.
     """
     result = executor.invoke({"input": question, "chat_history": chat_history})

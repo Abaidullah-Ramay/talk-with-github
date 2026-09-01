@@ -28,7 +28,7 @@
 # TWO requests (one for the model to pick a tool, one to answer). At 20 RPM
 # shared across everyone, that is roughly ten conversation turns per minute for
 # the whole app. So HTTP 429 from throttling is a NORMAL operating condition
-# here, not a rare fault - which is exactly why it is classified separately from
+# here, not a rare fault, which is exactly why it is classified separately from
 # a spent budget below.
 
 import os
@@ -48,7 +48,7 @@ import streamlit as st
 # first request instead of drifting.
 #
 # These are overridable by secret or environment variable so the model can be
-# changed without a code edit - but the default is the pinned snapshot.
+# changed without a code edit, but the default is the pinned snapshot.
 
 CHAT_MODEL = os.getenv("CHAT_MODEL", "gpt-5.4-mini-2026-03-17")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
@@ -59,11 +59,11 @@ FREE_TURNS = 3
 
 ALLOWANCE_SPENT = (
     "The free allowance for this demo is used up. You can add your own OpenAI "
-    "API key in the sidebar to keep going - it stays in your browser session."
+    "API key in the sidebar to keep going, it stays in your browser session."
 )
 TOO_BUSY = (
     "The demo is being rate limited right now (it runs on a small shared quota). "
-    "Wait a few seconds and send that again - this did not use up one of your "
+    "Wait a few seconds and send that again, this did not use up one of your "
     "free messages."
 )
 NO_KEY = (
@@ -84,7 +84,7 @@ def demo_api_key() -> str:
     once something has touched `st.secrets`. An app that reads os.environ
     directly and never touches st.secrets finds the environment empty on
     Community Cloud, and constructing the OpenAI client then raises before the
-    page can render a single element - which looks exactly like a broken app
+    page can render a single element, which looks exactly like a broken app
     rather than a missing secret.
 
     Touching st.secrets first is the fix. The try/except is because there is no
@@ -114,7 +114,7 @@ def secrets_diagnostic() -> str:
     This exists because of a second trap: the Secrets box on Community Cloud
     takes TOML, so an unquoted line loads NOTHING AT ALL rather than partially:
 
-        OPENAI_API_KEY=sk-proj-...      wrong - invalid TOML, zero secrets loaded
+        OPENAI_API_KEY=sk-proj-...      wrong. Invalid TOML, zero secrets loaded
         OPENAI_API_KEY="sk-proj-..."    correct
 
     From the outside, "invalid file" and "no secrets configured" look identical.
@@ -126,7 +126,7 @@ def secrets_diagnostic() -> str:
     except Exception as error:
         return (f"st.secrets could not be read ({type(error).__name__}). "
                 f"If you are on Streamlit Cloud, check the Secrets box parses as "
-                f"TOML - values must be quoted.")
+                f"TOML. Values must be quoted.")
     if not names:
         return "No secrets are configured for this app."
     return "Secrets this app can see: " + ", ".join(names) + "."
@@ -150,7 +150,7 @@ def free_turns_used() -> dict:
       - it resets when the app sleeps or redeploys (Community Cloud sleeps idle
         apps), which zeroes this dictionary
       - everyone behind one NAT shares an entry, so an office shares three
-        messages between hundreds of people - a usability cost, not a security one
+        messages between hundreds of people, a usability cost, not a security one
       - IP addresses are spoofable, and IPv6 hands one user an enormous range
 
     ttl="12h" bounds the growth: one entry per distinct IP until it expires.
@@ -168,7 +168,7 @@ def visitor_id() -> str:
 
     The one that actually bit: `getattr(..., None) or "local"` is NOT enough,
     because it only guards against None and falsiness. Under Streamlit's own
-    AppTest harness `st.context.ip_address` returns a MagicMock - truthy, so the
+    AppTest harness `st.context.ip_address` returns a MagicMock, truthy, so the
     fallback never fired, and a DIFFERENT instance every script run, so every
     turn landed under a new dictionary key and the counter never got past 1.
 
@@ -222,7 +222,7 @@ def close_gate() -> None:
 #   "you are going too fast"   -> transient. Works again in seconds.
 #
 # Treating them the same means a visitor who arrives during a busy minute is told
-# the demo is over - and if you also close their gate, a fifteen-second queue has
+# the demo is over, and if you also close their gate, a fifteen-second queue has
 # destroyed their entire free allowance. With a 20 RPM project limit that is not
 # hypothetical, it is the common case.
 #
@@ -296,7 +296,7 @@ def explain_failure(error: BaseException, own_key: bool) -> tuple[str, bool]:
     details, internal identifiers and occasionally fragments of the request
     itself. The real exception is logged server-side by the caller.
 
-    The order of these branches is the whole point - see the comment above.
+    The order of these branches is the whole point, see the comment above.
     """
     # 1. TERMINAL first, because a quota error also contains "429"
     if out_of_credit(error):

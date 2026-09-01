@@ -1,7 +1,7 @@
 # 💬 Talk to GitHub
 
 Paste a public GitHub repository link into the box in the middle of the page, and ask it
-anything — the folder structure, what a specific file contains, where something is
+anything, the folder structure, what a specific file contains, where something is
 handled, how big the project is.
 
 Built with **LangChain** (a tool-calling agent, `AgentExecutor`), following the patterns
@@ -9,8 +9,7 @@ in `langchain-course`.
 
 > **On the shared demo key:** the in-app message limit stops one visitor draining the
 > demo allowance in a sitting. **The hard spend cap on the OpenAI project is what stops
-> money being lost.** The two are different things and are not confused in the code —
-> see [Running this safely in public](#running-this-safely-in-public).
+> money being lost.** The two are different things and are not confused in the code. See [Running this safely in public](#running-this-safely-in-public).
 
 ## Quick start
 
@@ -34,8 +33,8 @@ is what a visitor to the deployed app does.
 | `repo_index.py` | Download the repo as a zip, split it, embed it into a vector store |
 | `agent.py` | The LangChain agent and its four tools |
 | `guard.py` | Keys, the usage gate, and failure classification |
-| `test_guard.py` | Tests for all of that — no key or network needed |
-| `requirements.txt` | Deployment dependencies — deliberately short |
+| `test_guard.py` | Tests for all of that, no key or network needed |
+| `requirements.txt` | Deployment dependencies, deliberately short |
 
 ## How it works
 
@@ -68,7 +67,7 @@ its separator list is just text to search for:
 It never parses anything, and three things go wrong as a result:
 
 1. **It cuts inside strings.** A code generator holding a template, or a docstring showing
-   an example, contains `\ndef ` — and it happily cuts there, sometimes tearing an
+   an example, contains `\ndef `, and it happily cuts there, sometimes tearing an
    unterminated `"""` in half.
 2. **It strands decorators.** `\ndef ` matches immediately *before* the `def`, so
    `@app.get("/health")` is left at the tail of the previous chunk. A `health_check`
@@ -78,7 +77,7 @@ It never parses anything, and three things go wrong as a result:
 
 So `.py` files go through Python's own `ast` module instead. A `FunctionDef` node knows
 its exact extent (`end_lineno`), and a decorator is an *attribute* of that node
-(`node.decorator_list`) — which is the only reason you can know the two belong together.
+(`node.decorator_list`), which is the only reason you can know the two belong together.
 A `def` inside a string is a `Constant`, not a definition.
 
 An oversized class is split at its **methods**, again via the parser, each labelled
@@ -95,7 +94,7 @@ Measured on `psf/requests` (the app's real settings):
 
 **The cost, stated plainly:** `ast` is Python-only. Doing this for JS, TS and Go means a
 parser per language (tree-sitter or similar), which is a bigger commitment than this app
-justifies — so Python gets exact chunks and the other ~20 languages get good-enough ones.
+justifies, so Python gets exact chunks and the other ~20 languages get good-enough ones.
 
 ### Why an agent instead of a retrieval chain
 
@@ -105,23 +104,23 @@ document say about X", but questions about a repository do not all have that sha
 
 | Question | What it actually needs |
 |---|---|
-| "what's the folder structure?" | the directory tree — no retrieval |
-| "show me the code in `app.py`" | that file's contents — no retrieval |
+| "what's the folder structure?" | the directory tree, no retrieval |
+| "show me the code in `app.py`" | that file's contents, no retrieval |
 | "where is authentication handled?" | retrieval, definitely |
-| "how many Python files?" | counting — no retrieval |
+| "how many Python files?" | counting, no retrieval |
 
 So the agent picks the tool that suits the question, and **three of its four tools never
 touch the vector store**:
 
 | Tool | Exact or fuzzy? |
 |---|---|
-| `search_code` | fuzzy — semantic search over the chunks |
-| `repo_structure` | **exact** — the real directory tree |
-| `read_file` | **exact** — the real file contents |
-| `repo_stats` | **exact** — real counts, languages, sizes |
+| `search_code` | fuzzy, semantic search over the chunks |
+| `repo_structure` | **exact**, the real directory tree |
+| `read_file` | **exact**, the real file contents |
+| `repo_stats` | **exact**, real counts, languages, sizes |
 
 That split matters. A tree and a file's text are things a loop can produce perfectly, so
-the model is never asked to guess at them — it is handed the real thing and asked to
+the model is never asked to guess at them, it is handed the real thing and asked to
 explain it. `read_file` is also forgiving about paths: ask for `app.py` when the file is
 `src/app.py` and it matches on the suffix and tells you the real path, rather than
 failing and making the agent guess again.
@@ -129,7 +128,7 @@ failing and making the agent guess again.
 ## Two decisions taken for deployment
 
 **No `git clone`.** Repositories are downloaded as a zip from
-`api.github.com/repos/{owner}/{repo}/zipball` — one HTTPS request, no subprocess, and no
+`api.github.com/repos/{owner}/{repo}/zipball`, one HTTPS request, no subprocess, and no
 dependency on a `git` binary existing on the host.
 
 **No Chroma.** The course uses Chroma, and locally that is the right call. On a hosted
@@ -141,7 +140,7 @@ app it is not:
   repo, so persisting an index buys nothing.
 
 `InMemoryVectorStore` is a first-class LangChain vector store with the same
-`.as_retriever()` interface, so nothing about the lesson changes — only where the vectors
+`.as_retriever()` interface, so nothing about the lesson changes, only where the vectors
 live. One index per visitor, discarded when they leave.
 
 ## Deploying to Streamlit Community Cloud
@@ -156,7 +155,7 @@ live. One index per visitor, discarded when they leave.
    ```
 
    **The quotes matter.** That box takes TOML, so an unquoted `KEY=value` line loads
-   nothing at all — which from the outside looks identical to "no secrets configured".
+   nothing at all, which from the outside looks identical to "no secrets configured".
    When no key is found the app prints the secret **names** it can see (never values),
    which distinguishes those two cases.
 
@@ -171,7 +170,7 @@ benefit.
 This app holds an API key that costs real money, behind a public URL with no login.
 Five layers, and **only one of them is a security boundary**.
 
-### Layer 1 — the OpenAI project. This is the real protection.
+### Layer 1, the OpenAI project. This is the real protection.
 
 Enforced by OpenAI, so it holds even if this code is wrong or bypassed entirely.
 
@@ -186,42 +185,42 @@ Enforced by OpenAI, so it holds even if this code is wrong or bypassed entirely.
 The hard-limit toggle is the whole step: off, the $5 is only a notification and requests
 keep going; on, requests actually stop.
 
-**A consequence of that RPM ceiling.** One agent turn costs at least *two* requests — one
+**A consequence of that RPM ceiling.** One agent turn costs at least *two* requests, one
 for the model to choose a tool, one to answer. At 20 RPM shared across everyone, that is
 roughly **ten conversation turns per minute for the whole app**. So HTTP 429 from
 throttling is a *normal operating condition* here, which is why the code classifies it
 separately from a spent budget.
 
-### Layer 2 — getting the key in without leaking it
+### Layer 2, getting the key in without leaking it
 
 `.env` and `.streamlit/secrets.toml` are gitignored, and full git history has been
 scanned for key-shaped strings (zero found). The key is read via `st.secrets`
-**explicitly**, with an `os.environ` fallback — because Streamlit only copies secrets
+**explicitly**, with an `os.environ` fallback, because Streamlit only copies secrets
 into the environment *after* something touches `st.secrets`, so an app that reads
 `os.environ` directly finds it empty on Cloud and crashes before rendering anything.
 
-### Layer 3 — the in-app usage gate
+### Layer 3, the in-app usage gate
 
 - **3 free messages per visitor.** Deliberately low: enough to demo, not enough to matter.
-- The counter lives in `@st.cache_resource`, **not session state** — a per-session counter
+- The counter lives in `@st.cache_resource`, **not session state**, a per-session counter
   resets on reload and in a new tab, which is no limit at all.
 - A visitor on **their own key is never counted**, and can use the app without limit.
 - Turns are counted **only after a successful call**, so a failed turn costs nothing and
   there is never anything to refund.
 - With no key configured the input is **disabled with a plain sentence**, not a traceback.
 
-### Layer 4 — failing without leaking or crashing
+### Layer 4, failing without leaking or crashing
 
 OpenAI answers two completely different situations with HTTP 429: *your budget is gone*
 (terminal) and *you are going too fast* (transient). The terminal case is checked
-**first**, because a quota error also contains the string "429" — get that order wrong and
+**first**, because a quota error also contains the string "429", get that order wrong and
 every spent budget reads as "try again shortly", inviting a visitor to hammer a wall.
 
 A throttle **never** closes the gate or spends a turn. The raw exception goes to the
 server log only; the page gets a sentence written by us. `test_guard.py` verifies all of
 this against real OpenAI error strings, including the quota-error-containing-429 case.
 
-### Layer 5 — what the repository publishes
+### Layer 5, what the repository publishes
 
 No dataset ships, so there is nothing to scrub. Deployment dependencies contain only what
 the app imports (74 packages, verified by installing `requirements.txt` alone in a clean
@@ -233,7 +232,7 @@ Stated plainly, because each item is a reason Layer 1 is the one that matters:
 
 - **IP is spoofable.** Streamlit's own docs say `st.context.ip_address` "should not be used
   for security measures because it can easily be spoofed."
-- **IPv6 makes per-IP counting weak** even without spoofing — one user gets a huge range.
+- **IPv6 makes per-IP counting weak** even without spoofing, one user gets a huge range.
 - **Everyone behind one NAT shares an entry**, so an office shares three messages.
 - **The counter resets** when the app sleeps or redeploys.
 - **Nothing stops prompt-directed misuse.** The model allow-list bounds how expensive it
@@ -247,26 +246,44 @@ ever appeared in a screenshot, a commit, a pasted log, or a chat with a tool.
 
 ## The example repositories
 
-The three offered on the landing page were chosen by **measuring them with this app's own
-indexer**, not by reputation. Each has to be recognisable, mostly source code rather than
-documentation, and small enough that a click is cheap — every click spends embedding
-budget.
+`facebook/react`, `langchain-ai/langchain` and `tiangolo/fastapi`, the ones people
+actually want to poke at.
 
-| repo | files | chunks | python chunks | ~cost per click |
-|---|---|---|---|---|
-| `theskumar/python-dotenv` | 40 | 244 | 186 | $0.0015 |
-| `encode/httpx` | 93 | 1,561 | 1,103 | $0.0094 |
-| `pallets/click` | 148 | 1,736 | 1,327 | $0.0104 |
+They are only usable because of **file prioritisation**, and that fix came out of a bug
+worth describing. The caps used to be applied in *zip order*, roughly alphabetical, so
+which files survived was arbitrary:
 
-**`tiangolo/fastapi` was deliberately dropped**, despite being the best known of the
-candidates. Measured: 1,200 files and 4,000 chunks, which hits *both* internal caps so the
-index comes out **truncated**, and its chunks break down as `markdown: 3,756` against
-`js: 25` — almost no Python at all, because the repository is dominated by its translated
-documentation tree. It is also the most expensive to index. Clicking it would produce an
-agent that answers about documentation rather than code.
+| repo | chunk languages before | after |
+|---|---|---|
+| `facebook/react` | `rust:3332, ts:104` | `js:4000` |
+| `tiangolo/fastapi` | `markdown:3756, js:25` | `python:3968` |
+| `langchain-ai/langchain` | `python:3881` (arbitrary files) | `python:4000`, all of `libs/` |
 
-Others measured and rejected for size: `psf/black` (3,251 chunks), `tiangolo/typer`
-(3,370), `Textualize/rich` (4,000, truncated).
+React's repo carries a large Rust compiler under `compiler/`, 4,210 files against 2,154
+under `packages/`. Reading in alphabetical order, the 1,200-file cap filled up inside the
+compiler and **never reached React itself**, so asking about hooks retrieved Rust. FastAPI's repo is dominated by its translated documentation tree.
+
+The repositories were never the problem; the selection was. `repo_index.py` now works out
+what the project is mostly *written in*, weighted by bytes, excluding docs and test trees
+so a docs-heavy project cannot elect Markdown as its language, then keeps files in
+priority order:
+
+```
+0  primary-language source, outside docs and tests   <- the actual project
+1  the top-level README
+2  primary-language source inside tests              <- shows how the API is used
+3  source in another language                        <- React's Rust compiler
+4  documentation
+```
+
+Retrieval for *"useState hook"* now returns `packages/react-reconciler/src/ReactFiberHooks.js`,
+and the agent names `mountState` / `updateState` correctly.
+
+**What this costs.** All three truncate, the sidebar says so, and the agent is instructed
+to admit a partial view rather than describe the whole project. Each indexes in 15-20
+seconds and costs roughly **$0.024**, about sixteen times a small repository, which is
+worth knowing against a $5 cap. Small repos are unaffected by the change: `psf/requests`
+still indexes 79 files to 933 chunks with no truncation.
 
 ## Limits, and why each exists
 
@@ -293,8 +310,8 @@ Tested end-to-end through Streamlit's own `AppTest`, driving it as a user would:
 - **Typing a URL and pressing Start** indexed `pypa/sampleproject` (9 files, 18 chunks),
   swapped to the chat view, and populated the sidebar metrics.
 - **A structure question** returned the exact directory tree.
-- **A follow-up that depends on history** — "show me the code in the file that has
-  `add_one`" — resolved to `src/sample/simple.py` and showed the real code.
+- **A follow-up that depends on history**, "show me the code in the file that has
+  `add_one`", resolved to `src/sample/simple.py` and showed the real code.
 - Transcript, LangChain history and rendered bubbles all stayed in step (4 / 4 / 4).
 
 On a real mid-size repository (`psf/requests`, 79 files → 709 chunks in 5.7s), asked "how

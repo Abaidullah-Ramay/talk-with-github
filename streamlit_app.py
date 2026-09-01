@@ -1,4 +1,4 @@
-# Talk to GitHub - the Streamlit app
+# Talk to GitHub: the Streamlit app
 #
 # Paste a repository link in the box in the middle of the page. The app downloads
 # it, indexes it, and then you can ask it anything: the folder structure, what a
@@ -9,7 +9,7 @@
 #
 # THE EXECUTION MODEL, WHICH SHAPES EVERY DECISION BELOW
 # Streamlit re-runs this WHOLE FILE from top to bottom on every interaction.
-# Local variables do not survive between runs - only `st.session_state` and the
+# Local variables do not survive between runs, only `st.session_state` and the
 # caches do. Three consequences:
 #
 #   1. The conversation lives in st.session_state, never in a local list.
@@ -45,7 +45,7 @@ st.set_page_config(page_title="Talk to GitHub", page_icon="💬", layout="center
 #
 # The obvious-looking alternative does NOT work: wrapping widgets in
 # `st.markdown("<div class='hero'>")` does not nest them, because each element
-# renders into its own container - the div ends up a sibling, and a descendant
+# renders into its own container, the div ends up a sibling, and a descendant
 # selector never matches. Keys avoid that entirely.
 #
 # Nothing here is load-bearing: if a future version changed the class scheme the
@@ -101,24 +101,27 @@ BIG_INPUT_CSS = """
 
 # Example repositories offered on the landing page.
 #
-# Chosen by MEASURING them with this app's own indexer, not by reputation. Each
-# one has to be recognisable, mostly source code rather than documentation, and
-# small enough that a click is cheap - every click spends embedding budget.
+# These are the well-known ones people actually want to poke at. They are only
+# usable because of the file prioritisation in repo_index.py, before that, the
+# 1,200-file cap filled up in zip order and produced nonsense:
 #
-#   repo                    files  chunks  python chunks  ~cost/click
-#   theskumar/python-dotenv    40     244            186     $0.0015
-#   encode/httpx               93   1,561          1,103     $0.0094
-#   pallets/click             148   1,736          1,327     $0.0104
+#   repo                     before prioritisation      after
+#   facebook/react           rust:3332, ts:104          js:4000
+#   tiangolo/fastapi         markdown:3756, js:25       python:3968
+#   langchain-ai/langchain   python:3881 (arbitrary)    python:4000, all of libs/
 #
-# tiangolo/fastapi was deliberately dropped despite being the best known: 1,200
-# files and 4,000 chunks, which hits BOTH caps so the index is truncated, and its
-# chunks come out markdown:3,756 against js:25 - almost no Python at all, because
-# the repo is dominated by its translated documentation tree. Clicking it costs
-# the most and produces an agent that answers about docs rather than code.
+# React's repo carries a large Rust compiler under compiler/ (4,210 files against
+# 2,154 under packages/), so the index used to be Rust and asking about hooks
+# retrieved a compiler. FastAPI's is dominated by its translated docs tree.
+#
+# All three are large enough that the index is TRUNCATED, the sidebar says so,
+# and the agent is told to admit it rather than describe the whole project. Each
+# costs roughly $0.024 to index, about sixteen times a small repo, which matters
+# against a $5 cap. They index in 15-20 seconds.
 EXAMPLE_REPOS = [
-    ("theskumar/python-dotenv", "tiny · loads .env files · this app uses it"),
-    ("encode/httpx", "modern async HTTP client for Python"),
-    ("pallets/click", "the library behind most Python CLIs"),
+    ("facebook/react", "the UI library · 4,000 chunks of JS"),
+    ("langchain-ai/langchain", "LLM framework · what this app is built with"),
+    ("tiangolo/fastapi", "the Python web framework"),
 ]
 
 
@@ -132,7 +135,7 @@ EXAMPLE_REPOS = [
 #
 # Streamlit documents st.context.ip_address as spoofable and explicitly unsuitable
 # for security, so the free-turn counter is here to stop one ordinary visitor
-# draining the demo in a sitting - nothing more.
+# draining the demo in a sitting, nothing more.
 
 
 def active_credentials() -> tuple[str, bool]:
@@ -156,7 +159,7 @@ def load_repo(url: str, _key: str, _token: str):
     """Download, split and embed one repository.
 
     Cached by URL, so asking a second question does not re-index. `max_entries`
-    caps how many repos one server process holds at once - the index lives in
+    caps how many repos one server process holds at once, the index lives in
     RAM, so this is the memory ceiling for the whole app.
 
     The key is passed EXPLICITLY into build_index rather than being written to
@@ -205,7 +208,7 @@ can_talk = bool(api_key) and (own_key or guard.turns_left(own_key=False) > 0)
 with st.sidebar:
     st.header("Talk to GitHub")
     st.caption(
-        "Paste any public GitHub repository and ask questions about it - "
+        "Paste any public GitHub repository and ask questions about it, "
         "the structure, a specific file's code, where something is handled."
     )
 
@@ -213,7 +216,7 @@ with st.sidebar:
 
     # ---- The usage gate ----
     if own_key:
-        st.success("Using your own API key - no message limit.")
+        st.success("Using your own API key, no message limit.")
     elif api_key:
         left = guard.turns_left(own_key=False)
         st.metric("Free messages left", f"{left} / {guard.FREE_TURNS}")
@@ -225,7 +228,7 @@ with st.sidebar:
         )
     else:
         st.error("This demo has no API key configured.")
-        # NAMES ONLY, never values - and only shown in the already-broken state
+        # NAMES ONLY, never values, and only shown in the already-broken state
         st.caption(guard.secrets_diagnostic())
 
     with st.expander("Use your own OpenAI key"):
@@ -233,7 +236,7 @@ with st.sidebar:
             "OpenAI API key", type="password", placeholder="sk-...",
             value=st.session_state.user_key,
             help="Used only for this browser session. Never stored, written to "
-                 "disk, or logged - it goes to OpenAI and nowhere else.",
+                 "disk, or logged, it goes to OpenAI and nowhere else.",
         ).strip()
         st.caption(f"The app calls `{guard.CHAT_MODEL}` and "
                    f"`{guard.EMBEDDING_MODEL}`.")
@@ -271,7 +274,7 @@ with st.sidebar:
 
 
 # ============================================================================
-# PART 5: The landing screen - the text field in the middle of the page
+# PART 5: The landing screen, with the text field in the middle of the page
 # ============================================================================
 
 if not st.session_state.repo_url:
@@ -424,7 +427,7 @@ if question:
                 # the per-turn cost) without bound. Twelve messages is six turns.
                 st.session_state.history = st.session_state.history[-12:]
 
-                # COUNT THE TURN ONLY NOW - after success, and only if the shared
+                # COUNT THE TURN ONLY NOW, after success, and only if the shared
                 # key paid for it. A failed turn costs the visitor nothing, so
                 # there is never anything to refund.
                 if not own_key:

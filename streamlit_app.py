@@ -266,10 +266,15 @@ with st.sidebar:
             files_col.metric("Files indexed", len(contents.files))
             chunks_col.metric("Chunks", len(index.documents))
 
-            if contents.skipped:
-                st.caption("Not indexed: " + ", ".join(
-                    f"{count} {reason}" for reason, count in contents.skipped.items()
-                ))
+            # Phrased by repo_index.describe_skipped, so the sidebar and the
+            # agent say the same thing. This used to print the internal reason
+            # keys, which produced "Not indexed: 7 not a text file, 1 too
+            # large": jargon, and wrong about notebooks, which are now read.
+            summary = repo_index.describe_skipped(contents)
+            if summary:
+                total = len(contents.tree)
+                st.caption(f"Skipped {sum(contents.skipped.values())} of {total} "
+                           f"files: {summary}.")
             if contents.subpath:
                 st.info(f"Indexing only `{contents.subpath}` from "
                         f"{contents.owner}/{contents.repo}.")

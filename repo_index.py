@@ -32,6 +32,7 @@
 
 import ast
 import io
+import json
 import os
 import re
 import zipfile
@@ -71,8 +72,12 @@ IGNORE_DIRS = {
 # to be a complete thought.
 LANGUAGE_BY_EXTENSION = {
     ".py": Language.PYTHON,
-    ".js": Language.JS, ".jsx": Language.JS,
-    ".ts": Language.TS, ".tsx": Language.TS,
+    # .mjs and .cjs are ordinary JavaScript with an explicit module system.
+    # Leaving them out silently dropped 16 real source files from React alone.
+    ".js": Language.JS, ".jsx": Language.JS, ".mjs": Language.JS,
+    ".cjs": Language.JS,
+    ".ts": Language.TS, ".tsx": Language.TS, ".mts": Language.TS,
+    ".cts": Language.TS,
     ".java": Language.JAVA,
     ".go": Language.GO,
     ".rs": Language.RUST,
@@ -84,6 +89,10 @@ LANGUAGE_BY_EXTENSION = {
     ".kt": Language.KOTLIN,
     ".swift": Language.SWIFT,
     ".scala": Language.SCALA,
+    # A notebook is JSON on disk, but what we index is the Python inside it,
+    # so it is treated as Python everywhere: language-aware splitting, the AST
+    # chunker, and the "primary language" weighting. See notebook_to_python.
+    ".ipynb": Language.PYTHON,
     ".md": Language.MARKDOWN, ".markdown": Language.MARKDOWN,
     ".html": Language.HTML,
     ".sol": Language.SOL,
@@ -95,6 +104,61 @@ PLAIN_EXTENSIONS = {
     ".sh", ".bash", ".zsh", ".env.example", ".sql", ".css", ".scss",
     ".dockerfile", ".makefile", ".gradle", ".properties",
 }
+
+# Extensions we deliberately do NOT index, kept separate from "unknown" purely
+# so the app can say WHY. "7 not a text file" is both unhelpful and, for a
+# notebook, untrue. A visitor should be told "3 data files" and understand
+# immediately that nothing is broken.
+DATA_EXTENSIONS = {
+    ".csv", ".tsv", ".psv", ".parquet", ".feather", ".arrow", ".avro", ".orc",
+    ".xlsx", ".xls", ".ods", ".pkl", ".pickle", ".npy", ".npz", ".h5", ".hdf5",
+    ".db", ".sqlite", ".sqlite3", ".mdb", ".dta", ".sav", ".jsonl", ".ndjson",
+}
+
+BINARY_EXTENSIONS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".ico", ".svg", ".tif",
+    ".tiff", ".pdf", ".psd", ".mp4", ".mov", ".avi", ".webm", ".mp3", ".wav",
+    ".ogg", ".flac", ".woff", ".woff2", ".ttf", ".otf", ".eot", ".zip", ".gz",
+    ".bz2", ".xz", ".tar", ".7z", ".rar", ".jar", ".war", ".whl", ".so",
+    ".dylib", ".dll", ".exe", ".bin", ".dat", ".o", ".a", ".class", ".pyc",
+    ".onnx", ".pt", ".pth", ".ckpt", ".safetensors", ".tflite", ".pb",
+}
+
+# Machine-written files. Indexing them is worse than useless: a lockfile is
+# thousands of lines of hashes, a source map is one line of coordinates, a
+# snapshot is serialised output. They retrieve well against almost any query and
+# answer nothing.
+GENERATED_EXTENSIONS = {".map", ".lock", ".snap", ".sum", ".tsbuildinfo"}
+
+# Certificates, keys and credential files. NEVER indexed, deliberately, and
+# separately from "generated" so the reason can say so.
+#
+# WHY THIS IS ITS OWN RULE. Test suites commit fixture certificates, and a
+# private key is plain text, so nothing above would have stopped one being
+# embedded. Once a chunk is in the store, the agent can be asked to quote it,
+# and the app would read a key file aloud on request. The keys in a public
+# repository's fixtures are throwaway, but an app that will print any key it is
+# shown is the wrong habit to build, and this app is a portfolio piece.
+CREDENTIAL_EXTENSIONS = {
+    ".pem", ".key", ".crt", ".cer", ".csr", ".der", ".p12", ".pfx", ".p7b",
+    ".jks", ".keystore", ".srl", ".asc", ".gpg", ".kdbx", ".ppk",
+}
+CREDENTIAL_NAMES = {
+    ".env", ".env.local", ".env.production", ".netrc", ".pgpass", ".htpasswd",
+    ".npmrc", ".pypirc", "credentials", "id_rsa", "id_ed25519", "secrets.toml",
+}
+
+# Singular and plural wording for every skip reason, so the app can write
+# "1 file over 400 KB" and "3 data files" rather than "1 file over 400 KBs".
+SKIP_DATA = "data"
+SKIP_BINARY = "binary"
+SKIP_UNKNOWN = "unknown"
+SKIP_LARGE = "large"
+SKIP_DEPENDENCY = "dependency"
+SKIP_CAPPED = "capped"
+SKIP_EMPTY = "empty"
+SKIP_GENERATED = "generated"
+SKIP_CREDENTIAL = "credential"
 
 # Filenames with no extension that are still worth reading
 NOTABLE_FILENAMES = {
@@ -109,6 +173,11 @@ CHUNK_OVERLAP = 150
 # person pointing at a monorepo hangs the app and spends the whole budget.
 MAX_ZIP_BYTES = 60 * 1024 * 1024      # 60 MB download ceiling
 MAX_FILE_BYTES = 400 * 1024           # skip any single file over 400 KB
+# Notebooks get a far higher ceiling because most of a committed .ipynb is
+# OUTPUT, not code: base64 images, rendered dataframes, stack traces. We throw
+# all of that away and keep only the source, so judging a notebook by its file
+# size would reject a 40 KB program for carrying a 3 MB plot.
+MAX_NOTEBOOK_BYTES = 8 * 1024 * 1024
 MAX_FILES = 1200                      # stop indexing beyond this many files
 MAX_CHUNKS = 4000                     # ceiling on the embedding bill
 
@@ -396,15 +465,16 @@ def fetch_repo(owner: str, repo: str, token: str = None,
             contents.tree.append(path)
 
             if _in_ignored_dir(path):
-                contents.skipped["ignored directory"] = \
-                    contents.skipped.get("ignored directory", 0) + 1
+                _note_skip(contents, SKIP_DEPENDENCY)
                 continue
             if not _is_text_file(path):
-                contents.skipped["not a text file"] = \
-                    contents.skipped.get("not a text file", 0) + 1
+                _note_skip(contents, _skip_reason(path))
                 continue
-            if entry.file_size > MAX_FILE_BYTES:
-                contents.skipped["too large"] = contents.skipped.get("too large", 0) + 1
+            # Notebooks are judged on their own ceiling, because most of a
+            # committed .ipynb is output that we are about to discard anyway.
+            ceiling = MAX_NOTEBOOK_BYTES if _is_notebook(path) else MAX_FILE_BYTES
+            if entry.file_size > ceiling:
+                _note_skip(contents, SKIP_LARGE)
                 continue
             eligible.append((path, entry, entry.file_size))
 
@@ -431,30 +501,178 @@ def fetch_repo(owner: str, repo: str, token: str = None,
             # full of replacement characters; skip it rather than embed noise.
             text = raw.decode("utf-8", errors="replace")
             if text.count(chr(0xFFFD)) > len(text) * 0.02:
-                contents.skipped["looks binary"] = \
-                    contents.skipped.get("looks binary", 0) + 1
+                _note_skip(contents, SKIP_BINARY)
                 continue
+
+            # A notebook is stored as the Python we extracted from it, not as
+            # the raw JSON, so read_file shows a person readable program and the
+            # AST chunker sees something it can parse.
+            if _is_notebook(path):
+                text = notebook_to_python(path, text)
+                if not text.strip():
+                    _note_skip(contents, SKIP_EMPTY)
+                    continue
 
             contents.files[path] = text
             contents.total_bytes += entry.file_size
 
         if contents.truncated:
-            contents.skipped["beyond the file cap"] = len(eligible) - len(contents.files)
+            contents.skipped[SKIP_CAPPED] = len(eligible) - len(contents.files)
 
     return contents
+
+
+def _note_skip(contents: "RepoContents", reason: str) -> None:
+    contents.skipped[reason] = contents.skipped.get(reason, 0) + 1
 
 
 def _in_ignored_dir(path: str) -> bool:
     return any(part in IGNORE_DIRS for part in path.split("/")[:-1])
 
 
+def _skip_reason(path: str) -> str:
+    """Which skip bucket an unindexable file belongs in, for the visitor's sake."""
+    name = path.split("/")[-1]
+    extension = os.path.splitext(name)[1].lower()
+    if _is_credential_file(path):
+        return SKIP_CREDENTIAL
+    if extension in GENERATED_EXTENSIONS or ".min." in name.lower():
+        return SKIP_GENERATED
+    if extension in DATA_EXTENSIONS:
+        return SKIP_DATA
+    if extension in BINARY_EXTENSIONS:
+        return SKIP_BINARY
+    return SKIP_UNKNOWN
+
+
+def _is_credential_file(path: str) -> bool:
+    """A certificate, key or credential file. Never indexed, on purpose."""
+    name = path.split("/")[-1].lower()
+    extension = os.path.splitext(name)[1]
+    return (extension in CREDENTIAL_EXTENSIONS
+            or name in CREDENTIAL_NAMES
+            or name.startswith("id_rsa") or name.startswith("id_ed25519"))
+
+
+def describe_skipped(contents: "RepoContents") -> str:
+    """Plain-English summary of what was left out, for the sidebar and the agent.
+
+    The old version printed the internal reason keys, which produced lines like
+    "Not indexed: 7 not a text file, 1 too large". Every word of that is either
+    jargon or, for the four notebooks it was counting, wrong.
+    """
+    kilobytes = MAX_FILE_BYTES // 1024
+    labels = {
+        SKIP_DATA: ("data file", "data files"),
+        SKIP_BINARY: ("image or binary", "images and binaries"),
+        SKIP_UNKNOWN: ("file of a type this app does not read",
+                       "files of types this app does not read"),
+        SKIP_LARGE: (f"file over {kilobytes} KB", f"files over {kilobytes} KB"),
+        SKIP_DEPENDENCY: ("file in a dependency folder",
+                          "files in dependency folders"),
+        SKIP_CAPPED: ("file past the size limit", "files past the size limit"),
+        SKIP_EMPTY: ("notebook with no code", "notebooks with no code"),
+        SKIP_GENERATED: ("generated file", "generated files"),
+        SKIP_CREDENTIAL: ("certificate or key file", "certificate and key files"),
+    }
+    parts = []
+    for reason, count in sorted(contents.skipped.items(), key=lambda item: -item[1]):
+        if not count:
+            continue
+        singular, plural = labels.get(reason, (reason, reason))
+        parts.append(f"{count} {singular if count == 1 else plural}")
+    return ", ".join(parts)
+
+
 def _is_text_file(path: str) -> bool:
     name = path.split("/")[-1]
     extension = os.path.splitext(name)[1].lower()
+    # These two come FIRST, because they must win against the allow-list below.
+    # A .env or a minified bundle would otherwise pass on its extension: a key
+    # file is text, and jquery.min.js is genuinely JavaScript.
+    if _is_credential_file(path):
+        return False
+    if extension in GENERATED_EXTENSIONS or ".min." in name.lower():
+        return False
     if extension in LANGUAGE_BY_EXTENSION or extension in PLAIN_EXTENSIONS:
         return True
     # Files like Dockerfile and Makefile have no extension
     return name in NOTABLE_FILENAMES or name.split(".")[0] in NOTABLE_FILENAMES
+
+
+# ============================================================================
+# PART 2b: Notebooks
+# ============================================================================
+# WHY A NOTEBOOK NEEDS AN EXTRACTOR RATHER THAN JUST AN EXTENSION
+#
+# A .ipynb is a JSON document. Adding it to the extension list and indexing the
+# raw file would embed this:
+#
+#   {"cell_type": "code", "execution_count": 12, "outputs": [{"data":
+#    {"image/png": "iVBORw0KGgoAAAANSUhEUg... 400 KB of base64 ..."}}],
+#    "source": ["df = pd.read_csv('books.csv')\n"]}
+#
+# One line of real code wrapped in metadata and a rendered PNG. Retrieval on
+# that returns punctuation, and the embedding bill is spent on plots.
+#
+# So the JSON is parsed and only `source` is kept: markdown cells become
+# comments, code cells become code. The result is ordinary Python, which then
+# goes through the same AST chunker as a .py file, which is what makes a
+# notebook's functions and classes chunk as whole definitions.
+#
+# THIS MATTERS MORE THAN IT SOUNDS. In a data science repository the notebooks
+# ARE the project. Skipping them leaves the app holding a README, a
+# requirements.txt and a .gitignore, and honestly reporting it cannot see
+# anything, which reads as broken because it effectively is.
+
+# Notebook magics and shell escapes are not Python and will fail ast.parse:
+#   %matplotlib inline        !pip install pandas        %%time
+# They are commented out rather than dropped, so the reader still sees that the
+# notebook installs pandas, while the parser sees valid Python.
+_MAGIC = re.compile(r"^\s*[%!]")
+
+
+def notebook_to_python(path: str, raw: str) -> str:
+    """Extract a notebook's source as Python. Outputs are discarded.
+
+    Returns "" if this is not a readable notebook, which the caller treats as a
+    skip rather than an error: one malformed file must not fail a whole repo.
+    """
+    try:
+        notebook = json.loads(raw)
+    except (ValueError, TypeError):
+        return ""
+    if not isinstance(notebook, dict):
+        return ""
+
+    pieces = []
+    for number, cell in enumerate(notebook.get("cells") or [], start=1):
+        if not isinstance(cell, dict):
+            continue
+        source = cell.get("source", "")
+        # `source` is a list of lines in the standard format, but plenty of
+        # tools write a single string
+        if isinstance(source, list):
+            source = "".join(str(line) for line in source)
+        source = str(source).strip("\n")
+        if not source.strip():
+            continue
+
+        kind = cell.get("cell_type")
+        if kind == "markdown":
+            # Kept, not dropped. A notebook's prose is often the only
+            # explanation of what the code is for.
+            pieces.append("\n".join("# " + line for line in source.splitlines()))
+        elif kind == "code":
+            lines = [f"# {line}" if _MAGIC.match(line) else line
+                     for line in source.splitlines()]
+            pieces.append(f"# In [{number}]:\n" + "\n".join(lines))
+
+    return "\n\n".join(pieces) + "\n" if pieces else ""
+
+
+def _is_notebook(path: str) -> bool:
+    return path.lower().endswith(".ipynb")
 
 
 # ============================================================================
@@ -611,7 +829,7 @@ def chunk_python_ast(path: str, source: str) -> list:
     if leftover:
         module_text = "\n".join(lines[i - 1] for i in leftover)
         if len(module_text.strip()) >= 40:
-            pieces.insert(0, (module_text[:CHUNK_SIZE * 2], "(module level)"))
+            pieces.insert(0, (module_text[:CHUNK_SIZE * 2], "module level"))
 
     return pieces or [(piece, "") for piece in _split_with_separators(path, source)]
 
@@ -655,7 +873,9 @@ def split_repo(contents: RepoContents) -> list:
         language = LANGUAGE_BY_EXTENSION.get(extension)
 
         # Python gets the real parser; everything else gets separators.
-        if extension == ".py":
+        # Notebooks arrive here already converted to Python (PART 2b), so they
+        # go through the same parser and chunk as whole definitions.
+        if extension in (".py", ".ipynb"):
             pieces = chunk_python_ast(path, text)
         else:
             pieces = [(piece, "") for piece in _split_with_separators(path, text)]
@@ -765,29 +985,68 @@ def build_index(url: str, token: str = None, progress=None,
 
 
 def build_tree(contents: RepoContents, max_entries: int = 300) -> str:
-    """Render the repository layout as an indented tree."""
-    interesting = [p for p in sorted(contents.tree) if not _in_ignored_dir(p)]
-    truncated = len(interesting) > max_entries
-    interesting = interesting[:max_entries]
+    """Render the repository layout the way `tree` does.
+
+    WHY THIS IS NOT A ONE LINER ANY MORE
+    The first version put a marker character on every line, a space for indexed
+    files and "?" for the rest, plus a footnote explaining the "?". It was
+    honest and it read terribly: on a data science repo almost every line got a
+    question mark, and the agent dutifully repeated the convention back to the
+    user, so the answer to "show me the structure" was a wall of "?".
+
+    Honesty belongs in a footnote, not on every line. The tree is now a plain
+    tree, and the files whose contents are unavailable are NAMED once
+    underneath. Same information, and it reads like output rather than an
+    apology.
+    """
+    interesting = sorted(p for p in contents.tree if not _in_ignored_dir(p))
+    shown = interesting[:max_entries]
+
+    # Build a nested mapping: directory name -> dict, file name -> None
+    root: dict = {}
+    for path in shown:
+        node = root
+        parts = path.split("/")
+        for part in parts[:-1]:
+            node = node.setdefault(part, {})
+            if node is None:                       # a file and a dir collided
+                break
+        else:
+            node.setdefault(parts[-1], None)
 
     lines = [f"{contents.full_name}/"]
-    seen_dirs = set()
 
-    for path in interesting:
-        parts = path.split("/")
-        # Emit any parent directories we have not printed yet
-        for depth in range(len(parts) - 1):
-            directory = "/".join(parts[:depth + 1])
-            if directory not in seen_dirs:
-                seen_dirs.add(directory)
-                lines.append("  " * (depth + 1) + parts[depth] + "/")
-        # A file sits one level deeper than its parent directory. The marker is
-        # a single character so indexed and non-indexed files stay aligned.
-        marker = " " if path in contents.files else "?"
-        lines.append("  " * len(parts) + marker + " " + parts[-1])
+    def render(node: dict, prefix: str) -> None:
+        # Directories first, then files, each alphabetically. That is what makes
+        # a tree scannable.
+        entries = sorted(node.items(),
+                         key=lambda item: (item[1] is None, item[0].lower()))
+        for position, (name, child) in enumerate(entries):
+            last = position == len(entries) - 1
+            branch = "\u2514\u2500\u2500 " if last else "\u251c\u2500\u2500 "
+            if child is None:
+                lines.append(f"{prefix}{branch}{name}")
+            else:
+                lines.append(f"{prefix}{branch}{name}/")
+                render(child, prefix + ("    " if last else "\u2502   "))
 
-    if truncated:
-        lines.append(f"  ... and {len(contents.tree) - max_entries} more entries")
-    lines.append("")
-    lines.append("(entries marked '?' exist in the repo but were not indexed)")
+    render(root, "")
+
+    if len(interesting) > max_entries:
+        lines.append(f"... and {len(interesting) - max_entries} more entries")
+
+    # The footnote: name what is listed but not readable, once.
+    unread = [p for p in shown if p not in contents.files]
+    if unread:
+        names = [p.split("/")[-1] for p in unread[:8]]
+        more = f", and {len(unread) - 8} more" if len(unread) > 8 else ""
+        lines.append("")
+        lines.append(
+            f"Listed above but not indexed, so their contents cannot be quoted: "
+            f"{', '.join(names)}{more}."
+        )
+        summary = describe_skipped(contents)
+        if summary:
+            lines.append(f"Reason: {summary}.")
+
     return "\n".join(lines)

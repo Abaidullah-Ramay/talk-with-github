@@ -45,8 +45,8 @@ is what a visitor to the deployed app does.
     download zipball from GitHub      (one HTTPS request, no `git` needed)
                 |
                 v
-    chunk:  .py  -> real AST parser   (complete functions and classes)
-            rest -> language splitter (RecursiveCharacterTextSplitter)
+    chunk: .py/.ipynb -> real AST parser   (complete functions and classes)
+                 rest -> language splitter (RecursiveCharacterTextSplitter)
                 |
                 v
     embed into InMemoryVectorStore    (per visitor, discarded on exit)
@@ -381,6 +381,60 @@ Binary files, dependency directories (`node_modules`, `.venv`, `dist`, …) and 
 that is not text are skipped. **The app tells you what it skipped**, in the sidebar and in
 the agent's own context, so it says "that file was not indexed" instead of inventing an
 answer about it.
+
+Two categories are refused **on purpose**, and they beat the extension allow-list:
+
+- **Generated files.** A lockfile is thousands of lines of hashes, a source map is one line
+  of coordinates, a snapshot is serialised output. They match almost any query and answer
+  nothing. `jquery.min.js` is genuinely JavaScript and is still noise, so `.min.` is
+  refused by name.
+- **Certificates, keys and credential files** (`.pem`, `.key`, `.env`, `id_rsa`, `.netrc`,
+  …). A private key is plain text, so nothing else here would have stopped one being
+  embedded, and once a chunk is in the store the agent can be asked to quote it. The keys
+  in a public repository's fixtures are throwaway, but an app that will read any key file
+  aloud on request is the wrong habit to build. `psf/requests` alone has 12.
+
+### Notebooks
+
+`.ipynb` files are indexed as the Python inside them. This is not a matter of adding an
+extension, because the raw file looks like this:
+
+```json
+{"cell_type": "code", "execution_count": 12,
+ "outputs": [{"data": {"image/png": "iVBORw0KGgoAAA... 400 KB of base64 ..."}}],
+ "source": ["df = pd.read_csv('books.csv')\n"]}
+```
+
+One line of real code, wrapped in metadata and a rendered PNG. So the JSON is parsed and
+only `source` is kept: markdown cells become comments, because a notebook's prose is often
+the only explanation of what the code is for, and `%matplotlib` and `!pip` lines are
+commented out rather than deleted, so the reader still sees that the notebook installs
+pandas while `ast.parse` sees valid Python. The result goes through the same AST chunker as
+a `.py` file.
+
+Notebooks also get a much higher size ceiling (8 MB against 400 KB), because most of a
+committed `.ipynb` is output that is about to be discarded, and judging one by its file size
+rejects a 40 KB program for carrying a 3 MB plot.
+
+**Why this mattered more than it sounds.** In a data science repository the notebooks *are*
+the project. Before this, `Semantic_Book_Recommender` indexed 5 of 13 files: a README, a
+`requirements.txt`, a `.gitignore`, a LICENSE and one `.py`. The four notebooks holding the
+entire pipeline were counted as "not a text file" and the app reported, accurately, that it
+could not see much. It now indexes 9 files and 29 chunks, and can quote the emotion
+classifier out of `sentiment-analysis.ipynb`.
+
+### Saying what was skipped, in English
+
+The sidebar used to read `Not indexed: 7 not a text file, 1 too large`. Every word of that
+is either jargon or, for the four notebooks it was counting, false. Skips are now bucketed
+and phrased: `Skipped 4 of 13 files: 3 data files, 1 file over 400 KB`.
+
+The structure tool had the same problem in a different form. It marked every line of the
+tree with `?` for "not indexed" and explained the convention in a footnote, so on a data
+science repo the answer to "show me the structure" was a wall of question marks, and the
+agent repeated the convention back. The tree is now a plain tree, and the unreadable files
+are **named once underneath**. Same information, and it reads like output rather than an
+apology.
 
 ## What is verified
 

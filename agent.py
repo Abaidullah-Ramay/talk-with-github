@@ -85,9 +85,12 @@ HOW TO ANSWER
 from memory and never fill in gaps.
 - If a tool returns nothing useful, say so plainly. Do not fall back on what you \
 happen to know about a popular library that shares this name.
-- Some files in this repository were not indexed (binaries, very large files, \
-dependency folders). If a question is about one of those, say it was not indexed \
-rather than guessing.
+- Some files in this repository were not indexed (data files, images, very large \
+files, dependency folders). If a question is about one of those, say it was not \
+indexed rather than guessing.
+- When you show the structure, present the tree exactly as the tool returns it. \
+Do not annotate individual lines with markers of your own, and do not add a \
+legend. The tool already names anything it could not read, underneath the tree.
 - Keep answers conversational and reasonably short. Use a code block when showing \
 code, and plain prose otherwise.
 - Write with ordinary punctuation. Do not use em dashes or a spaced hyphen as a \

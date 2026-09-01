@@ -201,13 +201,37 @@ into the environment *after* something touches `st.secrets`, so an app that read
 
 ### Layer 3, the in-app usage gate
 
-- **3 free messages per visitor.** Deliberately low: enough to demo, not enough to matter.
-- The counter lives in `@st.cache_resource`, **not session state**, a per-session counter
+There are **two** allowances, because the two operations cost very different amounts. A
+chat turn is roughly **$0.001**. Loading a large repository is roughly **$0.024** of
+embeddings, about twenty chat turns of cost in a single click.
+
+| Allowance | Per visitor | Guards |
+|---|---|---|
+| Messages | **3** | each agent turn |
+| Repositories | **2** | each *new* index build, the expensive call |
+
+- Metering only the messages was a real hole, and it guarded the cheap operation. With the
+  chat gate fully closed, a visitor could return to the landing screen and index repository
+  after repository forever. Driven through `AppTest`, `build_index` ran on **four attempts
+  out of four** while the sidebar read `0`. `test_gate.py` now asserts against the number of
+  index builds, not against the displayed number.
+- **A spent message allowance also blocks indexing.** Loading a repo you cannot then ask
+  about is embedding budget spent for nothing.
+- **Reopening a repo you already loaded is free.** "Use a different repo" returns to the
+  landing screen, so returning to something you just had on screen must not cost a second
+  slot, and while the index is cached it costs nothing to serve.
+- Both counters live in `@st.cache_resource`, **not session state**, a per-session counter
   resets on reload and in a new tab, which is no limit at all.
-- A visitor on **their own key is never counted**, and can use the app without limit.
-- Turns are counted **only after a successful call**, so a failed turn costs nothing and
-  there is never anything to refund.
+- A visitor on **their own key is never counted** against either allowance.
+- Both are charged **only after success**, so a 404, an oversized repo, a bad folder path or
+  a failed turn costs nothing and there is never anything to refund.
 - With no key configured the input is **disabled with a plain sentence**, not a traceback.
+- The numbers are shown as **bare figures**, not `3 / 3`, which was easy to misread as three
+  already used out of three.
+
+Both counters live in the app process, so **restarting or redeploying the app resets them**,
+and Community Cloud sleeps idle apps. That is by design rather than an oversight: the gate is
+cost smoothing, and the $5 hard cap is the layer that actually bounds the loss.
 
 ### Layer 4, failing without leaking or crashing
 

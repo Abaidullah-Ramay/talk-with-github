@@ -213,6 +213,83 @@ def close_gate() -> None:
 
 
 # ============================================================================
+# PART 3b: The indexing allowance
+# ============================================================================
+# WHY THIS EXISTS, AND WHY THE TURN COUNTER ABOVE WAS NOT ENOUGH ON ITS OWN.
+#
+# The turn counter guards the CHEAP operation. Indexing is the expensive one:
+# a large repository is around 4,000 chunks to embed, roughly $0.024, which is
+# fifteen to twenty chat turns of cost in a single click. Chatting was gated and
+# indexing was not, so a visitor with zero messages left could sit on the
+# landing screen and load repository after repository forever, spending nothing
+# in "messages" and real embedding budget every time.
+#
+# That was measured, not guessed. With the chat gate fully closed, build_index
+# ran on four attempts out of four. The sidebar read 0 of 3 and the expensive
+# path was wide open. The counter was protecting the wrong thing.
+#
+# So indexing gets its own allowance: two repositories per visitor, enough to
+# try the app on something famous and then on something of their own.
+#
+# Re-opening a repository the SAME visitor already loaded is free. Their URLs
+# are recorded, so returning to a repo does not cost a second slot, which
+# matters because "Use a different repo" sends them back to the landing screen.
+
+FREE_INDEXES = 2
+
+INDEX_ALLOWANCE_SPENT = (
+    "You have loaded as many repositories as this demo allows. Add your own "
+    "OpenAI API key in the sidebar to load more, it stays in your browser "
+    "session."
+)
+
+
+@st.cache_resource(ttl="12h")
+def indexed_repos() -> dict:
+    """Visitor id -> the set of repository URLs that visitor has indexed.
+
+    Same shape, and the same honest limits, as free_turns_used(): it lives in
+    process memory, so it resets when the app restarts or sleeps, and everyone
+    behind one NAT shares an entry.
+    """
+    return {}
+
+
+def _visitor_repos() -> set:
+    return indexed_repos().setdefault(visitor_id(), set())
+
+
+def indexes_left(own_key: bool) -> int:
+    """How many new repositories this visitor may still load."""
+    if own_key:
+        return FREE_INDEXES
+    return max(0, FREE_INDEXES - len(_visitor_repos()))
+
+
+def may_index(url: str, own_key: bool) -> bool:
+    """Whether this visitor is allowed to index this URL.
+
+    A repo they have ALREADY indexed is always allowed. While the index is
+    still cached it costs nothing to reopen, and refusing to reopen something
+    they just had on screen would be baffling.
+    """
+    if own_key:
+        return True
+    if url.strip() in _visitor_repos():
+        return True
+    return indexes_left(own_key=False) > 0
+
+
+def note_index(url: str) -> None:
+    """Record a SUCCESSFUL index. Called only once build_index has returned.
+
+    Counting after success, exactly as with turns, means a 404, an oversized
+    repo or a bad folder path costs the visitor nothing.
+    """
+    _visitor_repos().add(url.strip())
+
+
+# ============================================================================
 # PART 4: Classifying failures
 # ============================================================================
 # THE TRAP THIS SOLVES: OpenAI answers two completely different situations with

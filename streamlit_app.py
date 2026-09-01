@@ -218,13 +218,27 @@ with st.sidebar:
     if own_key:
         st.success("Using your own API key, no message limit.")
     elif api_key:
+        # TWO allowances, because the two operations cost very different money.
+        # A chat turn is roughly $0.001. Loading a large repository is roughly
+        # $0.024 of embeddings, so it is metered separately instead of free.
+        #
+        # Shown as bare numbers on purpose. This used to read "3 / 3" under the
+        # label "Free messages left", which is easy to misread as three ALREADY
+        # USED out of three.
         left = guard.turns_left(own_key=False)
-        st.metric("Free messages left", f"{left} / {guard.FREE_TURNS}")
+        repos_left = guard.indexes_left(own_key=False)
+        messages_column, repos_column = st.columns(2)
+        messages_column.metric("Messages left", left,
+                               help=f"{guard.FREE_TURNS} per visitor")
+        repos_column.metric("Repos left", repos_left,
+                            help=f"{guard.FREE_INDEXES} per visitor")
         if left == 0:
             st.warning(guard.ALLOWANCE_SPENT)
+        elif repos_left == 0:
+            st.info(guard.INDEX_ALLOWANCE_SPENT)
         st.caption(
-            "This is a shared demo key with a small monthly budget, so the "
-            "allowance is per visitor and deliberately low."
+            "This is a shared demo key with a small monthly budget, so both "
+            "allowances are per visitor and deliberately low."
         )
     else:
         st.error("This demo has no API key configured.")
@@ -348,10 +362,24 @@ if not st.session_state.repo_url:
                 url, start = f"https://github.com/{name}", True
 
     if start:
+        # The order here matters. Indexing is the expensive call, so it is
+        # checked against BOTH allowances before anything is downloaded:
+        #
+        #   can_talk        loading a repo you cannot then ask about spends
+        #                   embedding budget for nothing
+        #   may_index(url)  caps how many DIFFERENT repos one visitor can load,
+        #                   which is what actually stops the budget draining
+        #
+        # Without these two, a visitor at zero messages could keep indexing
+        # forever. That was measured: four attempts, four real index builds.
         if not api_key:
             st.error("Add an OpenAI API key in the sidebar first.")
         elif not url.strip():
             st.error("Paste a GitHub repository link.")
+        elif not can_talk:
+            st.error(guard.ALLOWANCE_SPENT)
+        elif not guard.may_index(url, own_key):
+            st.error(guard.INDEX_ALLOWANCE_SPENT)
         else:
             # Validate the URL BEFORE the slow download, so a typo fails fast
             try:
@@ -370,6 +398,11 @@ if not st.session_state.repo_url:
                         load_agent(url.strip(), api_key, github_token)
                     status.update(label=f"Ready: {index.contents.full_name}",
                                   state="complete", expanded=False)
+                    # Charged only now. A 404, an oversized repo or a bad folder
+                    # path raises above and costs the visitor nothing, the same
+                    # rule the turn counter follows.
+                    if not own_key:
+                        guard.note_index(url.strip())
                     st.session_state.repo_url = url.strip()
                     st.rerun()
                 except ValueError as error:

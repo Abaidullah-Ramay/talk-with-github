@@ -1,0 +1,31 @@
+# Deployment dependencies for talk-github.
+#
+# This file is deliberately SHORT. It is not a copy of the parent project's
+# requirements - this app imports far less, and a deployment that installs
+# torch, chromadb and pandas for no reason is slow to build and easy to break.
+#
+# Two things are absent on purpose:
+#   - No chromadb. The app uses LangChain's InMemoryVectorStore, so there is no
+#     SQLite version requirement and no pysqlite3-binary shim to maintain.
+#     See the comment at the top of repo_index.py.
+#   - No GitPython. Repositories are downloaded as a zip over HTTPS, so no `git`
+#     binary needs to exist on the host.
+#
+# Versions are pinned to what this was built and tested against. Loosen them
+# deliberately, not by accident.
+
+streamlit==1.62.0
+
+# LangChain. langchain-classic supplies AgentExecutor and
+# create_tool_calling_agent, which moved out of the main package in 1.x.
+langchain==1.3.17
+langchain-classic==1.0.8
+langchain-core==1.6.0
+langchain-openai==1.6.0
+langchain-text-splitters==1.1.2
+
+openai==3.5.0
+tiktoken==0.14.0
+
+requests==2.34.2
+python-dotenv==1.2.3

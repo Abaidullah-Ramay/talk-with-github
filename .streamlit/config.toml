@@ -1,0 +1,16 @@
+# Streamlit configuration.
+#
+# Only settings that change behaviour are here; everything else is left at its
+# default so the app looks native on whatever host it lands on.
+
+[theme]
+base = "light"
+primaryColor = "#2563eb"
+
+[server]
+# The zipball download plus embedding can take a while on a large repo, so give
+# the websocket room before it decides the session is dead.
+maxUploadSize = 5
+
+[browser]
+gatherUsageStats = false

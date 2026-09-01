@@ -21,6 +21,7 @@
 #      behind.
 
 import os
+import re
 
 import streamlit as st
 from langchain_core.messages import AIMessage, HumanMessage
@@ -31,10 +32,93 @@ import repo_index
 
 st.set_page_config(page_title="Talk to GitHub", page_icon="💬", layout="centered")
 
+# ============================================================================
+# Styling
+# ============================================================================
+# Streamlit's default text input and button are sized for forms, and the landing
+# page here is one field that deserves to be the focus of the screen. This CSS
+# enlarges just those two.
+#
+# Targeted by WIDGET KEY, which is the documented way to do this. Giving a widget
+# `key="foo"` makes Streamlit put `st-key-foo` on its container as a real CSS
+# class, so `.st-key-foo input` hits exactly that one widget and nothing else.
+#
+# The obvious-looking alternative does NOT work: wrapping widgets in
+# `st.markdown("<div class='hero'>")` does not nest them, because each element
+# renders into its own container - the div ends up a sibling, and a descendant
+# selector never matches. Keys avoid that entirely.
+#
+# Nothing here is load-bearing: if a future version changed the class scheme the
+# app would simply look default.
+
+BIG_INPUT_CSS = """
+<style>
+/* --- the URL field --- */
+.st-key-repo_url_input input {
+    font-size: 1.15rem !important;
+    height: 3.4rem !important;
+    padding: 0.5rem 1.1rem !important;
+    border-radius: 12px !important;
+    border: 2px solid #d7dce5 !important;
+    text-align: center;
+}
+.st-key-repo_url_input input:focus {
+    border-color: #2563eb !important;
+    box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12) !important;
+}
+.st-key-repo_url_input input::placeholder {
+    color: #9aa3b2 !important;
+    font-size: 1.05rem;
+}
+
+/* --- the Start button --- */
+.st-key-start_button button {
+    height: 3.2rem !important;
+    font-size: 1.08rem !important;
+    font-weight: 600 !important;
+    border-radius: 12px !important;
+}
+
+/* --- the example buttons: quieter, card-like, two lines of text --- */
+[class*="st-key-example_"] button {
+    height: auto !important;
+    min-height: 3.4rem !important;
+    padding: 0.6rem 0.9rem !important;
+    font-size: 0.9rem !important;
+    font-weight: 500 !important;
+    border-radius: 10px !important;
+    border: 1px solid #e2e6ee !important;
+    background: #fbfcfe !important;
+    line-height: 1.3 !important;
+    white-space: normal !important;
+}
+[class*="st-key-example_"] button:hover {
+    border-color: #2563eb !important;
+    background: #f4f7ff !important;
+}
+</style>
+"""
+
+# Example repositories offered on the landing page.
+#
+# Chosen by MEASURING them with this app's own indexer, not by reputation. Each
+# one has to be recognisable, mostly source code rather than documentation, and
+# small enough that a click is cheap - every click spends embedding budget.
+#
+#   repo                    files  chunks  python chunks  ~cost/click
+#   theskumar/python-dotenv    40     244            186     $0.0015
+#   encode/httpx               93   1,561          1,103     $0.0094
+#   pallets/click             148   1,736          1,327     $0.0104
+#
+# tiangolo/fastapi was deliberately dropped despite being the best known: 1,200
+# files and 4,000 chunks, which hits BOTH caps so the index is truncated, and its
+# chunks come out markdown:3,756 against js:25 - almost no Python at all, because
+# the repo is dominated by its translated documentation tree. Clicking it costs
+# the most and produces an agent that answers about docs rather than code.
 EXAMPLE_REPOS = [
-    "https://github.com/pypa/sampleproject",
-    "https://github.com/psf/requests",
-    "https://github.com/tiangolo/fastapi",
+    ("theskumar/python-dotenv", "tiny · loads .env files · this app uses it"),
+    ("encode/httpx", "modern async HTTP client for Python"),
+    ("pallets/click", "the library behind most Python CLIs"),
 ]
 
 
@@ -102,11 +186,15 @@ st.session_state.setdefault("repo_url", "")       # the repo we are talking abou
 st.session_state.setdefault("history", [])        # LangChain message objects
 st.session_state.setdefault("transcript", [])     # what we show on screen
 st.session_state.setdefault("user_key", "")
-st.session_state.setdefault("user_gh_token", "")
 
 # The gate, computed ONCE per rerun and used by both the sidebar and the input
 api_key, own_key = active_credentials()
-github_token = st.session_state.get("user_gh_token", "").strip() or guard.github_token()
+# Read from secrets/env only. There is deliberately no visitor-facing input for
+# this: every repository this app can reach is public, so a visitor never needs a
+# token, and asking a stranger for a GitHub credential they do not need is worse
+# than the small rate-limit benefit. The operator can still set GITHUB_TOKEN to
+# raise the limit from 60 to 5,000 requests an hour.
+github_token = guard.github_token()
 can_talk = bool(api_key) and (own_key or guard.turns_left(own_key=False) > 0)
 
 
@@ -150,14 +238,6 @@ with st.sidebar:
         st.caption(f"The app calls `{guard.CHAT_MODEL}` and "
                    f"`{guard.EMBEDDING_MODEL}`.")
 
-    with st.expander("GitHub token (optional)"):
-        st.caption(
-            "Only raises the GitHub rate limit from 60 to 5,000 requests per "
-            "hour. Public repositories work without it."
-        )
-        st.session_state.user_gh_token = st.text_input(
-            "GitHub token", type="password", value=st.session_state.user_gh_token
-        )
 
     if st.session_state.repo_url:
         st.divider()
@@ -195,35 +275,58 @@ with st.sidebar:
 # ============================================================================
 
 if not st.session_state.repo_url:
-    # Vertical breathing room, so the input sits near the middle rather than
-    # jammed under the title
-    st.write("")
-    st.write("")
+    st.markdown(BIG_INPUT_CSS, unsafe_allow_html=True)
 
+    # ---- The note about what this works on, at the top ----
     st.markdown(
-        "<h1 style='text-align:center; margin-bottom:0.2em;'>💬 Talk to GitHub</h1>"
-        "<p style='text-align:center; color:#888; font-size:1.05em;'>"
-        "Paste a repository link and ask it anything.</p>",
+        "<div style='text-align:center; margin-top:0.6rem; margin-bottom:1.8rem;'>"
+        "<span style='display:inline-block; padding:0.35rem 0.9rem; "
+        "border-radius:999px; background:#eef4ff; color:#1d4ed8; "
+        "font-size:0.86rem; font-weight:500; border:1px solid #dbe6ff;'>"
+        "Works with any <strong>public</strong> or <strong>open-source</strong> "
+        "repository &mdash; no sign-in, nothing installed"
+        "</span></div>",
         unsafe_allow_html=True,
     )
-    st.write("")
 
-    # Centre the field by putting it in the middle of three columns
-    left, middle, right = st.columns([1, 3, 1])
+    # ---- Hero ----
+    st.markdown(
+        "<h1 style='text-align:center; font-size:3rem; margin:0 0 0.35rem 0; "
+        "letter-spacing:-0.02em;'>💬 Talk to GitHub</h1>"
+        "<p style='text-align:center; color:#6b7280; font-size:1.15rem; "
+        "margin:0 0 2rem 0;'>Paste a repository link and ask it anything &mdash; "
+        "the structure, a file's code, how something works.</p>",
+        unsafe_allow_html=True,
+    )
+
+    # ---- The field and button, wrapped so the CSS above scopes to them ----
+    left, middle, right = st.columns([1, 6, 1])
     with middle:
         url = st.text_input(
             "GitHub repository URL",
-            placeholder="https://github.com/owner/repo",
+            placeholder="github.com/owner/repo",
             label_visibility="collapsed",
+            key="repo_url_input",          # -> .st-key-repo_url_input in the DOM
         )
-        start = st.button("Start", type="primary", use_container_width=True)
+        start = st.button("Analyse this repo  →", type="primary",
+                          use_container_width=True, key="start_button")
 
-        st.write("")
-        st.caption("Or try one of these:")
-        for example in EXAMPLE_REPOS:
-            name = "/".join(example.split("/")[-2:])
-            if st.button(name, key=f"eg_{name}", use_container_width=True):
-                url, start = example, True
+    # ---- Examples, three across ----
+    st.markdown(
+        "<p style='text-align:center; color:#9aa3b2; font-size:0.85rem; "
+        "margin:2rem 0 0.6rem 0; text-transform:uppercase; "
+        "letter-spacing:0.06em;'>or try one of these</p>",
+        unsafe_allow_html=True,
+    )
+    example_columns = st.columns(len(EXAMPLE_REPOS))
+    for column, (name, blurb) in zip(example_columns, EXAMPLE_REPOS):
+        with column:
+            # The key becomes a CSS class, so it must contain no slashes or dots
+            safe_key = "example_" + re.sub(r"[^a-zA-Z0-9]+", "_", name)
+            if st.button(f"{name.split('/')[-1]}\n{blurb}",
+                         key=safe_key, use_container_width=True,
+                         help=f"github.com/{name}"):
+                url, start = f"https://github.com/{name}", True
 
     if start:
         if not api_key:

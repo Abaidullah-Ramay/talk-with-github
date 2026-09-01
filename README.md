@@ -160,8 +160,11 @@ live. One index per visitor, discarded when they leave.
    When no key is found the app prints the secret **names** it can see (never values),
    which distinguishes those two cases.
 
-`GITHUB_TOKEN` is optional and only raises the GitHub rate limit from 60 to 5,000
-requests an hour.
+`GITHUB_TOKEN` is optional, operator-only, and just raises the GitHub rate limit from 60
+to 5,000 requests an hour. There is deliberately **no visitor-facing input** for it: every
+repository this app can reach is public, so a visitor never needs one, and asking a
+stranger for a GitHub credential they do not need is worse than the small rate-limit
+benefit.
 
 ## Running this safely in public
 
@@ -241,6 +244,29 @@ Stated plainly, because each item is a reason Layer 1 is the one that matters:
 Because the key is project-scoped, rotation is cheap: create a new key in the same
 project, update the Streamlit secret, delete the old one. Rotate immediately if it has
 ever appeared in a screenshot, a commit, a pasted log, or a chat with a tool.
+
+## The example repositories
+
+The three offered on the landing page were chosen by **measuring them with this app's own
+indexer**, not by reputation. Each has to be recognisable, mostly source code rather than
+documentation, and small enough that a click is cheap — every click spends embedding
+budget.
+
+| repo | files | chunks | python chunks | ~cost per click |
+|---|---|---|---|---|
+| `theskumar/python-dotenv` | 40 | 244 | 186 | $0.0015 |
+| `encode/httpx` | 93 | 1,561 | 1,103 | $0.0094 |
+| `pallets/click` | 148 | 1,736 | 1,327 | $0.0104 |
+
+**`tiangolo/fastapi` was deliberately dropped**, despite being the best known of the
+candidates. Measured: 1,200 files and 4,000 chunks, which hits *both* internal caps so the
+index comes out **truncated**, and its chunks break down as `markdown: 3,756` against
+`js: 25` — almost no Python at all, because the repository is dominated by its translated
+documentation tree. It is also the most expensive to index. Clicking it would produce an
+agent that answers about documentation rather than code.
+
+Others measured and rejected for size: `psf/black` (3,251 chunks), `tiangolo/typer`
+(3,370), `Textualize/rich` (4,000, truncated).
 
 ## Limits, and why each exists
 

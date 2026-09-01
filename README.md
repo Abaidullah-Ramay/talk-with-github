@@ -7,6 +7,11 @@ handled, how big the project is.
 Built with **LangChain** (a tool-calling agent, `AgentExecutor`), following the patterns
 in `langchain-course`.
 
+> **On the shared demo key:** the in-app message limit stops one visitor draining the
+> demo allowance in a sitting. **The hard spend cap on the OpenAI project is what stops
+> money being lost.** The two are different things and are not confused in the code —
+> see [Running this safely in public](#running-this-safely-in-public).
+
 ## Quick start
 
 ```bash
@@ -28,6 +33,8 @@ is what a visitor to the deployed app does.
 | `streamlit_app.py` | The UI: the centred repo field, then the chat |
 | `repo_index.py` | Download the repo as a zip, split it, embed it into a vector store |
 | `agent.py` | The LangChain agent and its four tools |
+| `guard.py` | Keys, the usage gate, and failure classification |
+| `test_guard.py` | Tests for all of that — no key or network needed |
 | `requirements.txt` | Deployment dependencies — deliberately short |
 
 ## How it works
@@ -139,24 +146,101 @@ live. One index per visitor, discarded when they leave.
 
 ## Deploying to Streamlit Community Cloud
 
-1. Push this folder to a GitHub repo (its own repo, or this one with `talk-github` as the
-   app path).
+1. Push this folder to a GitHub repo.
 2. On [share.streamlit.io](https://share.streamlit.io) create an app pointing at
    `streamlit_app.py`.
 3. In **Settings → Secrets**, paste:
 
    ```toml
-   OPENAI_API_KEY = "sk-..."
+   OPENAI_API_KEY = "sk-proj-..."
    ```
 
    **The quotes matter.** That box takes TOML, so an unquoted `KEY=value` line loads
    nothing at all — which from the outside looks identical to "no secrets configured".
+   When no key is found the app prints the secret **names** it can see (never values),
+   which distinguishes those two cases.
 
 `GITHUB_TOKEN` is optional and only raises the GitHub rate limit from 60 to 5,000
-requests an hour. Public repositories work without it.
+requests an hour.
 
-Visitors without a configured key can paste their own into the sidebar, so the app is
-still usable if the shared key runs out.
+## Running this safely in public
+
+This app holds an API key that costs real money, behind a public URL with no login.
+Five layers, and **only one of them is a security boundary**.
+
+### Layer 1 — the OpenAI project. This is the real protection.
+
+Enforced by OpenAI, so it holds even if this code is wrong or bypassed entirely.
+
+| Setting | Value |
+|---|---|
+| Monthly spend limit | **$5.00**, with **"Enforce a hard limit" ON** |
+| Alerts | 50% and 80% |
+| Model allow-list | exactly `gpt-5.4-mini-2026-03-17` and `text-embedding-3-small` |
+| Rate limits | 10 RPM on the default row, 20 RPM chat, 20 RPM embeddings |
+| Key | project-scoped, not account-wide |
+
+The hard-limit toggle is the whole step: off, the $5 is only a notification and requests
+keep going; on, requests actually stop.
+
+**A consequence of that RPM ceiling.** One agent turn costs at least *two* requests — one
+for the model to choose a tool, one to answer. At 20 RPM shared across everyone, that is
+roughly **ten conversation turns per minute for the whole app**. So HTTP 429 from
+throttling is a *normal operating condition* here, which is why the code classifies it
+separately from a spent budget.
+
+### Layer 2 — getting the key in without leaking it
+
+`.env` and `.streamlit/secrets.toml` are gitignored, and full git history has been
+scanned for key-shaped strings (zero found). The key is read via `st.secrets`
+**explicitly**, with an `os.environ` fallback — because Streamlit only copies secrets
+into the environment *after* something touches `st.secrets`, so an app that reads
+`os.environ` directly finds it empty on Cloud and crashes before rendering anything.
+
+### Layer 3 — the in-app usage gate
+
+- **3 free messages per visitor.** Deliberately low: enough to demo, not enough to matter.
+- The counter lives in `@st.cache_resource`, **not session state** — a per-session counter
+  resets on reload and in a new tab, which is no limit at all.
+- A visitor on **their own key is never counted**, and can use the app without limit.
+- Turns are counted **only after a successful call**, so a failed turn costs nothing and
+  there is never anything to refund.
+- With no key configured the input is **disabled with a plain sentence**, not a traceback.
+
+### Layer 4 — failing without leaking or crashing
+
+OpenAI answers two completely different situations with HTTP 429: *your budget is gone*
+(terminal) and *you are going too fast* (transient). The terminal case is checked
+**first**, because a quota error also contains the string "429" — get that order wrong and
+every spent budget reads as "try again shortly", inviting a visitor to hammer a wall.
+
+A throttle **never** closes the gate or spends a turn. The raw exception goes to the
+server log only; the page gets a sentence written by us. `test_guard.py` verifies all of
+this against real OpenAI error strings, including the quota-error-containing-429 case.
+
+### Layer 5 — what the repository publishes
+
+No dataset ships, so there is nothing to scrub. Deployment dependencies contain only what
+the app imports (74 packages, verified by installing `requirements.txt` alone in a clean
+environment).
+
+### What none of this protects against
+
+Stated plainly, because each item is a reason Layer 1 is the one that matters:
+
+- **IP is spoofable.** Streamlit's own docs say `st.context.ip_address` "should not be used
+  for security measures because it can easily be spoofed."
+- **IPv6 makes per-IP counting weak** even without spoofing — one user gets a huge range.
+- **Everyone behind one NAT shares an entry**, so an office shares three messages.
+- **The counter resets** when the app sleeps or redeploys.
+- **Nothing stops prompt-directed misuse.** The model allow-list bounds how expensive it
+  can get; the system prompt's topic restriction is politeness, not enforcement.
+
+### Rotating the key
+
+Because the key is project-scoped, rotation is cheap: create a new key in the same
+project, update the Streamlit secret, delete the old one. Rotate immediately if it has
+ever appeared in a screenshot, a commit, a pasted log, or a chat with a tool.
 
 ## Limits, and why each exists
 

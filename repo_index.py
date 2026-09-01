@@ -44,10 +44,17 @@ from langchain_core.vectorstores import InMemoryVectorStore
 from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import Language, RecursiveCharacterTextSplitter
 
-# Load environment variables from .env
-load_dotenv()
+# Load THIS directory's .env, explicitly.
+#
+# load_dotenv() with no argument walks UP the directory tree until it finds a
+# .env, so an app sitting inside a larger project silently picks up the parent's
+# key. That is wrong twice over: locally you cannot tell whether the app is
+# configured or is borrowing someone else's credentials, and it hides a missing
+# key that would fail on deployment. Load only our own file.
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
-EMBEDDING_MODEL = "text-embedding-3-small"
+# Pinned to the model allow-list on the OpenAI project. See guard.py.
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
 
 # Directories that are never worth indexing: dependency trees, build output,
 # caches. Skipping them is most of what keeps an index small and useful.
@@ -519,7 +526,8 @@ class RepoIndex:
                 f"({len(self.documents)} chunks) out of {len(self.contents.tree)} total")
 
 
-def build_index(url: str, token: str = None, progress=None) -> RepoIndex:
+def build_index(url: str, token: str = None, progress=None,
+                api_key: str = None) -> RepoIndex:
     """Fetch, split and embed a repository. This is the whole pipeline.
 
     `progress` is an optional callback taking a status string, so the Streamlit
@@ -545,7 +553,12 @@ def build_index(url: str, token: str = None, progress=None) -> RepoIndex:
         raise ValueError("Nothing left to index after splitting.")
 
     say(f"Embedding {len(documents)} chunks...")
-    embeddings = OpenAIEmbeddings(model=EMBEDDING_MODEL)
+    # The key is passed EXPLICITLY, never read from the process environment.
+    # A visitor's own key must not become the process default for every other
+    # visitor - which is exactly what setting os.environ inside a cached
+    # function would do.
+    embeddings = OpenAIEmbeddings(model=EMBEDDING_MODEL,
+                                  **({"api_key": api_key} if api_key else {}))
     store = InMemoryVectorStore.from_documents(documents, embeddings)
 
     say("Ready.")

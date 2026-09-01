@@ -38,9 +38,19 @@ from langchain_openai import ChatOpenAI
 
 import repo_index
 
-load_dotenv()
+# Load THIS directory's .env, explicitly.
+#
+# load_dotenv() with no argument walks UP the directory tree until it finds a
+# .env, so an app sitting inside a larger project silently picks up the parent's
+# key. That is wrong twice over: locally you cannot tell whether the app is
+# configured or is borrowing someone else's credentials, and it hides a missing
+# key that would fail on deployment. Load only our own file.
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
-MODEL = "gpt-4o"
+# The chat model, pinned to the DATED SNAPSHOT that the OpenAI project's model
+# allow-list names. An alias would silently change behaviour when the provider
+# repoints it; a mismatch with the allow-list fails at the first request.
+MODEL = os.getenv("CHAT_MODEL", "gpt-5.4-mini-2026-03-17")
 
 # How much of a file we will paste into the model's context at once. A 4,000-line
 # file would otherwise eat the whole window and crowd out the conversation.
@@ -278,7 +288,8 @@ def build_tools(index) -> list:
 # ============================================================================
 
 
-def build_agent(index, model_name: str = MODEL, verbose: bool = False) -> AgentExecutor:
+def build_agent(index, model_name: str = MODEL, verbose: bool = False,
+                api_key: str = None) -> AgentExecutor:
     """Build the AgentExecutor for one indexed repository.
 
     The prompt has FOUR slots and all four are required by
@@ -301,7 +312,9 @@ def build_agent(index, model_name: str = MODEL, verbose: bool = False) -> AgentE
         repo_facts=build_repo_facts(index),
     )
 
-    llm = ChatOpenAI(model=model_name, temperature=0)
+    # Key passed explicitly, for the reason in repo_index.build_index
+    llm = ChatOpenAI(model=model_name, temperature=0,
+                     **({"api_key": api_key} if api_key else {}))
 
     agent = create_tool_calling_agent(llm=llm, tools=tools, prompt=prompt)
 

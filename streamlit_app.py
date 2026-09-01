@@ -287,7 +287,7 @@ if not st.session_state.repo_url:
         "border-radius:999px; background:#eef4ff; color:#1d4ed8; "
         "font-size:0.86rem; font-weight:500; border:1px solid #dbe6ff;'>"
         "Works with any <strong>public</strong> or <strong>open-source</strong> "
-        "repository &mdash; no sign-in, nothing installed"
+        "repository. No sign-in, nothing installed."
         "</span></div>",
         unsafe_allow_html=True,
     )
@@ -297,8 +297,8 @@ if not st.session_state.repo_url:
         "<h1 style='text-align:center; font-size:3rem; margin:0 0 0.35rem 0; "
         "letter-spacing:-0.02em;'>💬 Talk to GitHub</h1>"
         "<p style='text-align:center; color:#6b7280; font-size:1.15rem; "
-        "margin:0 0 2rem 0;'>Paste a repository link and ask it anything &mdash; "
-        "the structure, a file's code, how something works.</p>",
+        "margin:0 0 2rem 0;'>Paste a repository link and ask it anything: "
+        "the structure, a file's code, or how something works.</p>",
         unsafe_allow_html=True,
     )
 

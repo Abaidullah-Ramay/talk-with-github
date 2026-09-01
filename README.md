@@ -285,6 +285,63 @@ seconds and costs roughly **$0.024**, about sixteen times a small repository, wh
 worth knowing against a $5 cap. Small repos are unaffected by the change: `psf/requests`
 still indexes 79 files to 933 chunks with no truncation.
 
+## Large repositories
+
+This app is built for small to medium projects, where it indexes everything. On a large
+repository it indexes a prioritised slice and says so. Measured file coverage:
+
+| repo | files | indexed | coverage |
+|---|---|---|---|
+| `psf/requests` | 130 | 79 | **100%** |
+| `pallets/click` | 166 | 148 | **100%** |
+| `langchain-ai/langchain` | 3,044 | 1,200 | 43% |
+| `django/django` | 7,086 | 1,200 | 31% |
+| `facebook/react` | 7,205 | 1,200 | 17% |
+| `vercel/next.js` | . | 0 | refused, over 60 MB |
+
+### Point at a folder for complete coverage
+
+Paste a folder link and only that subtree is indexed, completely:
+
+```
+github.com/facebook/react/tree/main/packages/react
+```
+
+| target | files | chunks | coverage | cost |
+|---|---|---|---|---|
+| `facebook/react` | 1,200 | 4,000 | 17% | $0.024 |
+| `react/tree/main/packages/react` | 84 | 589 | **100%** | $0.004 |
+| `django/tree/main/django/db` | 104 | 3,104 | **100%** | $0.019 |
+
+The branch or tag in the link is honoured, so `/tree/master/libs/core` indexes `master`.
+The agent is also told when its view is folder-scoped, so it refuses to speak for the rest
+of the project. Asked about the DOM renderer while scoped to `packages/react` it replied:
+*"The DOM renderer is not in `packages/react`. In this folder, I can only see the public
+React package implementation and exports."*
+
+### What this does not fix
+
+Being honest about the ceiling, because folder scoping is a workaround rather than a
+solution:
+
+- **Cross-cutting questions break.** "How does the reconciler talk to the DOM renderer?"
+  spans two packages; scope to one and the other is invisible.
+- **You have to know where to look**, which is often the very thing you wanted to ask.
+- **The 60 MB download ceiling is unchanged.** GitHub serves an archive of the whole tree,
+  so the zip is fetched before any filtering. `vercel/next.js` is still out of reach.
+- **A big folder still truncates.** `packages/react-dom` needs 4,272 chunks against a
+  4,000 cap.
+
+Full coverage of a large repository is blocked by three separate limits, not one. Measured
+for `facebook/react`: **37,709 chunks, $0.226 per index, 137 seconds of embedding, and
+927 MB of RAM** as Python-list vectors. Memory is the easy one, a numpy float16 array is
+eight times smaller. Cost is the hard one: at $0.226 an index, a $5 budget buys 22 of
+them. Doing this properly needs a persistent vector store so a repo is indexed once and
+shared, not per session, which means paid hosting rather than a free tier.
+
+For a $5 public demo, truncation with good file prioritisation plus honest reporting is
+the right trade.
+
 ## Limits, and why each exists
 
 | Limit | Value | Why |

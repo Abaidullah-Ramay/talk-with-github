@@ -114,6 +114,18 @@ def build_repo_facts(index) -> str:
 
     lines = [
         f"- Repository: {contents.full_name}",
+    ]
+    if contents.subpath:
+        # Without this the agent happily answers as though it had seen the whole
+        # project, when it has only seen one folder of it.
+        lines.append(
+            f"- IMPORTANT: you are looking at ONLY the folder "
+            f"'{contents.subpath}' inside {contents.owner}/{contents.repo}. You "
+            f"have NOT seen the rest of the repository. If a question is about "
+            f"code outside this folder, say that you can only see this folder "
+            f"and suggest the visitor point the app at the relevant one."
+        )
+    lines += [
         f"- {len(contents.files)} text files indexed, out of "
         f"{len(contents.tree)} files in the repository",
         f"- {len(index.documents)} searchable chunks",

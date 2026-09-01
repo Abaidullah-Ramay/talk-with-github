@@ -256,9 +256,13 @@ with st.sidebar:
                 st.caption("Not indexed: " + ", ".join(
                     f"{count} {reason}" for reason, count in contents.skipped.items()
                 ))
+            if contents.subpath:
+                st.info(f"Indexing only `{contents.subpath}` from "
+                        f"{contents.owner}/{contents.repo}.")
             if contents.truncated:
-                st.warning("This repo was large enough that indexing stopped early, "
-                           "so the answers cover only part of it.")
+                st.warning("This was large enough that indexing stopped early, "
+                           "so the answers cover only part of it. Paste a folder "
+                           "link to index one area completely.")
         except Exception:
             pass
 
@@ -321,6 +325,18 @@ if not st.session_state.repo_url:
         "letter-spacing:0.06em;'>or try one of these</p>",
         unsafe_allow_html=True,
     )
+    # Honest hint about large projects. The examples above are all truncated, so
+    # this is the route to complete coverage rather than a nicety.
+    st.markdown(
+        "<p style='text-align:center; color:#9aa3b2; font-size:0.82rem; "
+        "margin:1.4rem 0 0 0; line-height:1.5;'>"
+        "Big project? Paste a <strong>folder</strong> link to index just that "
+        "part, completely:<br>"
+        "<code style='font-size:0.78rem;'>"
+        "github.com/facebook/react/tree/main/packages/react</code></p>",
+        unsafe_allow_html=True,
+    )
+
     example_columns = st.columns(len(EXAMPLE_REPOS))
     for column, (name, blurb) in zip(example_columns, EXAMPLE_REPOS):
         with column:
@@ -339,11 +355,12 @@ if not st.session_state.repo_url:
         else:
             # Validate the URL BEFORE the slow download, so a typo fails fast
             try:
-                owner, repo = repo_index.parse_repo_url(url)
+                owner, repo, ref, subpath = repo_index.parse_repo_url(url)
+                target = f"{owner}/{repo}" + (f"/{subpath}" if subpath else "")
             except ValueError as error:
                 st.error(str(error))
             else:
-                status = st.status(f"Indexing {owner}/{repo}...", expanded=True)
+                status = st.status(f"Indexing {target}...", expanded=True)
                 try:
                     with status:
                         st.write("Downloading the repository...")

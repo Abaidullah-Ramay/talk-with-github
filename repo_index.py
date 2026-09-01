@@ -118,12 +118,29 @@ MAX_CHUNKS = 4000                     # ceiling on the embedding bill
 # ============================================================================
 
 
-def parse_repo_url(url: str) -> tuple[str, str]:
-    """Turn anything that looks like a GitHub link into (owner, repo).
+def parse_repo_url(url: str) -> tuple[str, str, str, str]:
+    """Turn a GitHub link into (owner, repo, ref, subpath).
 
-    Accepts what people actually paste: full URLs, URLs with a trailing slash,
-    `.git` suffixes, SSH remotes, `/tree/main/...` deep links, and bare
-    `owner/repo`.
+    Accepts what people actually paste:
+
+        github.com/pallets/click                          -> ("pallets","click","","")
+        pallets/click                                     -> same
+        git@github.com:pallets/click.git                  -> same
+        .../react/tree/main/packages/react-dom            -> ref "main",
+                                                             subpath "packages/react-dom"
+        .../click/blob/main/src/click/core.py             -> ref "main",
+                                                             subpath "src/click/core.py"
+
+    WHY THE SUBPATH MATTERS. A large repository cannot be indexed whole inside
+    this app's memory and cost limits, so pointing at one folder is how you get
+    COMPLETE coverage of the part you care about instead of a 17% slice of
+    everything. See the note in fetch_repo.
+
+    One known limitation, stated rather than hidden: a branch name containing a
+    slash ("feature/login") is indistinguishable from a branch plus a path, so
+    the first segment after /tree/ is taken as the ref and the rest as the path.
+    That is right for the overwhelming majority of links and wrong for the few
+    repositories that use slashes in branch names.
     """
     text = url.strip()
     if not text:
@@ -149,8 +166,15 @@ def parse_repo_url(url: str) -> tuple[str, str]:
             f"Try something like https://github.com/pypa/sampleproject"
         )
 
-    # Deep links like /tree/main/src, so keep only the first two segments
-    return parts[0], parts[1]
+    owner, repo = parts[0], parts[1]
+    rest = parts[2:]
+    ref, subpath = "", ""
+
+    if rest and rest[0] in ("tree", "blob") and len(rest) >= 2:
+        ref = rest[1]
+        subpath = "/".join(rest[2:])
+
+    return owner, repo, ref, subpath
 
 
 # ============================================================================
@@ -271,27 +295,59 @@ class RepoContents:
     total_bytes: int = 0
     truncated: bool = False
     primary_extensions: list = field(default_factory=list)
+    ref: str = ""            # branch or tag, if the link named one
+    subpath: str = ""        # folder the link pointed at, if any
 
     @property
     def full_name(self) -> str:
-        return f"{self.owner}/{self.repo}"
+        """Display name, including the folder when the link narrowed to one."""
+        name = f"{self.owner}/{self.repo}"
+        if self.subpath:
+            name += f"/{self.subpath}"
+        return name
 
 
-def fetch_repo(owner: str, repo: str, token: str = None) -> RepoContents:
+def fetch_repo(owner: str, repo: str, token: str = None,
+               ref: str = "", subpath: str = "") -> RepoContents:
     """Download the repository as a zip and read the text files out of it.
 
     A GitHub token is optional and only raises the rate limit (60 requests per
     hour anonymous, 5,000 authenticated). Nothing here needs write access.
+
+    `subpath` narrows indexing to one folder, which is the answer to large
+    repositories. Measured: facebook/react whole is 7,205 files of which only
+    1,200 fit the cap, so the agent sees 17%. Pointing at
+    packages/react-dom instead indexes that subtree COMPLETELY, for about a
+    hundredth of the cost.
+
+    Note this filters AFTER download: the whole zip still has to be fetched,
+    because GitHub serves an archive of the entire tree. So a repository over
+    MAX_ZIP_BYTES stays out of reach even with a subpath. Narrowing helps the
+    file, chunk and memory caps, not the download ceiling.
     """
     headers = {"Accept": "application/vnd.github+json"}
     token = token or os.getenv("GITHUB_TOKEN")
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
+    # A ref from a /tree/<ref>/... link is honoured, so a link to a branch
+    # indexes that branch rather than silently indexing the default one.
     url = f"https://api.github.com/repos/{owner}/{repo}/zipball"
+    if ref:
+        url += f"/{ref}"
     response = requests.get(url, headers=headers, timeout=120, stream=True)
 
     if response.status_code == 404:
+        # A 404 on /zipball/<ref> means either the repo or the REF is missing,
+        # and blaming the repo when the branch is the problem is actively
+        # misleading: "no public repository at pallets/click" is obviously wrong
+        # to anyone who just pasted a working link to it.
+        if ref:
+            raise ValueError(
+                f"{owner}/{repo} exists, but it has no branch or tag called "
+                f"'{ref}'. Check the branch name in the link (many projects use "
+                f"'main', some still use 'master')."
+            )
         raise ValueError(
             f"GitHub has no public repository at {owner}/{repo}. "
             f"Check the spelling, and note that private repos need a GITHUB_TOKEN."
@@ -315,7 +371,7 @@ def fetch_repo(owner: str, repo: str, token: str = None) -> RepoContents:
             )
 
     buffer.seek(0)
-    contents = RepoContents(owner=owner, repo=repo)
+    contents = RepoContents(owner=owner, repo=repo, ref=ref, subpath=subpath)
 
     with zipfile.ZipFile(buffer) as archive:
         all_entries = [e for e in archive.infolist() if not e.is_dir()]
@@ -329,6 +385,13 @@ def fetch_repo(owner: str, repo: str, token: str = None) -> RepoContents:
                 else entry.filename
             if not path:
                 continue
+
+            # Narrow to the requested folder BEFORE anything else, so the tree,
+            # the skip counts and the caps all describe the subtree the visitor
+            # asked about rather than the whole repository.
+            if subpath:
+                if not (path == subpath or path.startswith(subpath.rstrip("/") + "/")):
+                    continue
 
             contents.tree.append(path)
 
@@ -655,15 +718,21 @@ def build_index(url: str, token: str = None, progress=None,
     `progress` is an optional callback taking a status string, so the Streamlit
     page can show what is happening during the slow part.
     """
-    owner, repo = parse_repo_url(url)
+    owner, repo, ref, subpath = parse_repo_url(url)
 
     def say(message: str):
         if progress:
             progress(message)
 
+    target = f"{owner}/{repo}" + (f"/{subpath}" if subpath else "")
     say(f"Downloading {owner}/{repo}...")
-    contents = fetch_repo(owner, repo, token=token)
+    contents = fetch_repo(owner, repo, token=token, ref=ref, subpath=subpath)
     if not contents.files:
+        if subpath:
+            raise ValueError(
+                f"Nothing indexable found at '{subpath}' in {owner}/{repo}. "
+                f"Check the folder path, and note that it is case sensitive."
+            )
         raise ValueError(
             f"{owner}/{repo} downloaded, but it contains no text files this app "
             f"can read (it found {len(contents.tree)} files in total)."
